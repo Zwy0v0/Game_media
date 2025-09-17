@@ -1,0 +1,32 @@
+const express = require("express");
+const mongoose = require("mongoose");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const path = require("path");
+
+require("dotenv").config();
+
+const authRoutes = require("./routes/auth");
+const videoRoutes = require("./routes/videos");
+const screenshotRoutes = require("./routes/screenshots");
+
+const app = express();
+
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.json())
+app.use(express.static('public'))
+app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+app.use("/outputs", express.static(path.join(__dirname, "../outputs")));
+
+app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/videos", videoRoutes);
+app.use("/api/v1/screenshots", screenshotRoutes);
+const MONGO_URI = process.env.MONGO_URI || 'MONGO_URI=mongodb://mongo:27017/gamemedia'
+//console.log("MONGO_URI =>", process.env.MONGO_URI);
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB connected"))
+  .catch(err => console.error(err));
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

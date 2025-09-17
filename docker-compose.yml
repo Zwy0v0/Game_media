@@ -1,0 +1,21 @@
+version: "1"
+services:
+  app:
+    image: 901444280953.dkr.ecr.ap-southeast-2.amazonaws.com/game-media-app
+    ports:
+      - "8080:8080"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/gamemedia
+      - JWT_SECRET=supersecret
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+  mongo:
+    image: mongo:5
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

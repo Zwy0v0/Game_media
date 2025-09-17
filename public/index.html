@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Game Media Client</title>
+  <style>body{font-family:system-ui;margin:20px} fieldset{margin-bottom:16px}</style>
+</head>
+<body>
+  <h1>Game Media Client</h1>
+
+  <fieldset>
+    <legend>Auth</legend>
+    <input id="u" placeholder="username" value="admin">
+    <input id="p" placeholder="password" value="admin123" type="password">
+    <button onclick="login()">Login</button>
+    <span id="authStatus"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Videos</legend>
+    <input id="vg" placeholder="game name" value="LoL">
+    <input id="vf" type="file" accept="video/*">
+    <button onclick="uploadVideo()">Upload</button>
+    <input id="vid" placeholder="videoId">
+    <button onclick="transcode()">Transcode</button>
+    <button onclick="listVideos()">List</button>
+    <div id="videos"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Screenshots</legend>
+    <input id="sg" placeholder="game name" value="LoL">
+    <input id="sf" type="file" accept="image/*">
+    <button onclick="uploadShot()">Upload</button>
+    <input id="sid" placeholder="screenshotId">
+    <button onclick="processShot()">Process</button>
+    <button onclick="listShots()">List</button>
+    <div id="shots"></div>
+  </fieldset>
+
+<script>
+const BASE = location.origin;
+let token = "";
+
+async function login(){
+  const r = await fetch(`${BASE}/api/v1/auth/login`,{
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ username: u.value, password: p.value })
+  });
+  const d = await r.json(); token = d.token || ""; authStatus.textContent = token? "OK" : "Failed";
+}
+
+async function uploadVideo(){
+  const f = vf.files[0]; if(!f) return alert("pick a video");
+  const form = new FormData(); form.append("video", f); form.append("game", vg.value);
+  const r = await fetch(`${BASE}/api/v1/videos/upload`, { method:"POST", headers:{ Authorization:`Bearer ${token}` }, body: form });
+  const d = await r.json(); vid.value = d.videoId || ""; alert("uploaded: " + JSON.stringify(d));
+}
+async function transcode(){
+  if(!vid.value) return alert("set videoId");
+  const r = await fetch(`${BASE}/api/v1/videos/${vid.value}/transcode`, { method:"POST", headers:{ Authorization:`Bearer ${token}` } });
+  const d = await r.json(); alert("transcode: " + JSON.stringify(d));
+}
+async function listVideos(){
+  const r = await fetch(`${BASE}/api/v1/videos?sort=-createdAt`, { headers:{ Authorization:`Bearer ${token}` }});
+  const d = await r.json();
+  videos.innerHTML = d.items.map(x=>`<div>
+    <b>${x._id}</b> [${x.game}] transcoded=${x.transcoded}
+    <button onclick="download('${x._id}','720p')">dl 720p</button>
+    <button onclick="delVideo('${x._id}')">delete</button>
+  </div>`).join("");
+}
+// async function download(id,res="orig"){ location.href=`${BASE}/api/v1/videos/${id}/download?res=${res}`; }
+async function delVideo(id){
+  await fetch(`${BASE}/api/v1/videos/${id}`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` }});
+  listVideos();
+}
+
+async function uploadShot(){
+  const f = sf.files[0]; if(!f) return alert("pick an image");
+  const form = new FormData(); form.append("screenshot", f); form.append("game", sg.value);
+  const r = await fetch(`${BASE}/api/v1/screenshots/upload`, { method:"POST", headers:{ Authorization:`Bearer ${token}` }, body: form });
+  const d = await r.json(); sid.value = d._id || ""; alert("uploaded: " + JSON.stringify(d));
+}
+async function processShot(){
+  if(!sid.value) return alert("set screenshotId");
+  const r = await fetch(`${BASE}/api/v1/screenshots/${sid.value}/process`, { method:"POST", headers:{ Authorization:`Bearer ${token}` }});
+  const d = await r.json(); alert("process: " + JSON.stringify(d));
+}
+async function listShots(){
+  const r = await fetch(`${BASE}/api/v1/screenshots?sort=-createdAt`, { headers:{ Authorization:`Bearer ${token}` }});
+  const d = await r.json();
+  shots.innerHTML = d.items.map(x=>`<div>
+    <b>${x._id}</b> [${x.game}] processed=${x.processed}
+    <button onclick="delShot('${x._id}')">delete</button>
+  </div>`).join("");
+}
+async function delShot(id){
+  await fetch(`${BASE}/api/v1/screenshots/${id}`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` }});
+  listShots();
+}
+</script>
+</body></html>
