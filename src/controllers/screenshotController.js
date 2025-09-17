@@ -1,14 +1,10 @@
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-const Screenshot = require("../models/Screenshot");
-const Task = require("../models/Task");
+const { awsService } = require("../services/awsService");
+const { cacheService } = require("../services/cacheService");
 const { processImageMulti } = require("../utils/sharp");
 
-const storage = multer.diskStorage({
-  destination: "uploads/screenshots",
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
-});
+// 修改multer配置，使用内存存储
+const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 exports.uploadMiddleware = upload.single("screenshot");
@@ -16,14 +12,46 @@ exports.uploadMiddleware = upload.single("screenshot");
 exports.uploadScreenshot = async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No screenshot uploaded. Field 'screenshot' required." });
 
-  const shot = await Screenshot.create({
-    filename: req.file.filename,
-    mimeType: req.file.mimetype,
-    game: req.body.game || "",
-    owner: req.user.id
-  });
-
-  res.json(shot);
+  try {
+    // 生成唯一文件名
+    const filename = Date.now() + '_' + req.file.originalname;
+    const s3Key = `screenshots/${filename}`;
+    
+    // 上传到S3
+    await awsService.uploadToS3(s3Key, req.file.buffer, req.file.mimetype);
+    
+    // 保存元数据到DynamoDB
+    const screenshotData = awsService.toDynamoDBItem({
+      id: filename,
+      filename: filename,
+      s3Key: s3Key,
+      mimeType: req.file.mimetype,
+      game: req.body.game || "",
+      owner: req.user.username,
+      createdAt: new Date().toISOString(),
+      processed: false
+    });
+    
+    await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, screenshotData);
+    
+    // 缓存元数据
+    await cacheService.cacheMediaMetadata(filename, {
+      filename: filename,
+      game: req.body.game || "",
+      owner: req.user.username,
+      processed: false
+    });
+    
+    res.json({ 
+      id: filename,
+      filename: filename,
+      game: req.body.game || "",
+      owner: req.user.username
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
 };
 
 /**
@@ -31,39 +59,54 @@ exports.uploadScreenshot = async (req, res) => {
  * 返回 taskId + 状态
  */
 exports.processScreenshot = async (req, res) => {
-  const shot = await Screenshot.findById(req.params.id);
-  if (!shot) return res.status(404).json({ error: "Screenshot not found" });
-  if (req.user.role !== "admin" && String(shot.owner) !== req.user.id) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  const task = await Task.create({
-    type: "image-process",
-    targetType: "screenshot",
-    targetId: shot._id,
-    owner: req.user.id,
-    status: "queued",
-    params: { sizes: ["thumb", "medium"] }
-  });
-
   try {
-    task.status = "running";
-    await task.save();
-
-    const outs = await processImageMulti(shot.filename);
-    shot.outputs = outs;
-    shot.processed = true;
-    await shot.save();
-
-    task.status = "done";
-    await task.save();
-
-    res.json({ taskId: task._id, status: task.status, outputs: outs });
-  } catch (e) {
-    task.status = "failed";
-    task.error = e.message || String(e);
-    await task.save();
-    return res.status(500).json({ taskId: task._id, status: task.status, error: task.error });
+    const screenshotId = req.params.id;
+    
+    // 从DynamoDB获取截图信息
+    const screenshot = await awsService.getItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, {
+      id: { S: screenshotId }
+    });
+    
+    if (!screenshot.Item) {
+      return res.status(404).json({ error: "Screenshot not found" });
+    }
+    
+    // 权限检查
+    if (req.user.role !== "admin" && screenshot.Item.owner.S !== req.user.username) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    // 从S3下载原始文件
+    const s3Object = await awsService.getFromS3(screenshot.Item.s3Key.S);
+    const fileBuffer = await s3Object.Body.transformToByteArray();
+    
+    // 处理图片
+    const outputs = await processImageMulti(fileBuffer, screenshotId);
+    
+    // 更新DynamoDB记录
+    const updatedScreenshot = {
+      ...screenshot.Item,
+      processed: { BOOL: true },
+      outputs: { S: JSON.stringify(outputs) }
+    };
+    
+    await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, updatedScreenshot);
+    
+    // 更新缓存
+    await cacheService.cacheMediaMetadata(screenshotId, {
+      ...awsService.fromDynamoDBItem(screenshot.Item),
+      processed: true,
+      outputs: outputs
+    });
+    
+    res.json({ 
+      taskId: screenshotId, 
+      status: "done", 
+      outputs: outputs 
+    });
+  } catch (error) {
+    console.error('Process error:', error);
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -71,45 +114,122 @@ exports.processScreenshot = async (req, res) => {
  * 列表：/api/v1/screenshots?game=LoL&processed=true&page=1&limit=10&sort=-createdAt
  */
 exports.listShots = async (req, res) => {
-  const { page = 1, limit = 5, sort = "-createdAt", game, processed } = req.query;
-
-  const filter = {};
-  if (game) filter.game = game;
-  if (typeof processed !== "undefined") filter.processed = processed === "true";
-  if (req.user.role !== "admin") filter.owner = req.user.id;
-
-  const q = Screenshot.find(filter).populate("owner", "username role");
-  if (sort) q.sort(sort);
-  const total = await Screenshot.countDocuments(filter);
-  const items = await q.skip((page - 1) * limit).limit(Number(limit));
-
-  res.json({ total, page: Number(page), limit: Number(limit), items });
+  try {
+    const { page = 1, limit = 5, game, processed } = req.query;
+    
+    // 构建查询条件
+    let filterExpression = "";
+    let expressionAttributeValues = {};
+    
+    if (game) {
+      filterExpression += "game = :game";
+      expressionAttributeValues[":game"] = { S: game };
+    }
+    
+    if (typeof processed !== "undefined") {
+      if (filterExpression) filterExpression += " AND ";
+      filterExpression += "processed = :processed";
+      expressionAttributeValues[":processed"] = { BOOL: processed === "true" };
+    }
+    
+    if (req.user.role !== "admin") {
+      if (filterExpression) filterExpression += " AND ";
+      filterExpression += "owner = :owner";
+      expressionAttributeValues[":owner"] = { S: req.user.username };
+    }
+    
+    // 从DynamoDB查询截图列表
+    const result = await awsService.scanItems(
+      `${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`,
+      filterExpression || undefined,
+      expressionAttributeValues
+    );
+    
+    const items = result.Items.map(item => awsService.fromDynamoDBItem(item));
+    
+    // 分页
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const paginatedItems = items.slice(startIndex, endIndex);
+    
+    res.json({ 
+      total: items.length, 
+      page: Number(page), 
+      limit: Number(limit), 
+      items: paginatedItems 
+    });
+  } catch (error) {
+    console.error('List error:', error);
+    res.status(500).json({ error: error.message });
+  }
 };
 
 exports.getShot = async (req, res) => {
-  const shot = await Screenshot.findById(req.params.id).populate("owner", "username role");
-  if (!shot) return res.status(404).json({ error: "Screenshot not found" });
-  if (req.user.role !== "admin" && String(shot.owner._id) !== req.user.id) {
-    return res.status(403).json({ error: "Forbidden" });
+  try {
+    const screenshotId = req.params.id;
+    
+    // 从DynamoDB获取截图信息
+    const screenshot = await awsService.getItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, {
+      id: { S: screenshotId }
+    });
+    
+    if (!screenshot.Item) {
+      return res.status(404).json({ error: "Screenshot not found" });
+    }
+    
+    // 权限检查
+    if (req.user.role !== "admin" && screenshot.Item.owner.S !== req.user.username) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    const shotData = awsService.fromDynamoDBItem(screenshot.Item);
+    res.json(shotData);
+  } catch (error) {
+    console.error('Get error:', error);
+    res.status(500).json({ error: error.message });
   }
-  res.json(shot);
 };
 
-
 exports.deleteShot = async (req, res) => {
-  const shot = await Screenshot.findById(req.params.id);
-  if (!shot) return res.status(404).json({ error: "Screenshot not found" });
-  if (req.user.role !== "admin" && String(shot.owner) !== req.user.id) {
-    return res.status(403).json({ error: "Forbidden" });
+  try {
+    const screenshotId = req.params.id;
+    
+    // 从DynamoDB获取截图信息
+    const screenshot = await awsService.getItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, {
+      id: { S: screenshotId }
+    });
+    
+    if (!screenshot.Item) {
+      return res.status(404).json({ error: "Screenshot not found" });
+    }
+    
+    // 权限检查
+    if (req.user.role !== "admin" && screenshot.Item.owner.S !== req.user.username) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    // 从S3删除文件
+    await awsService.deleteFromS3(screenshot.Item.s3Key.S);
+    
+    // 删除处理后的文件
+    if (screenshot.Item.outputs) {
+      const outputs = JSON.parse(screenshot.Item.outputs.S);
+      for (const output of outputs) {
+        await awsService.deleteFromS3(output.s3Key);
+      }
+    }
+    
+    // 从DynamoDB删除记录
+    await awsService.deleteItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, {
+      id: { S: screenshotId }
+    });
+    
+    // 从缓存删除
+    await cacheService.delete(`media:${screenshotId}`);
+    
+    res.json({ message: "Screenshot deleted" });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ error: error.message });
   }
-
-  const files = [
-    path.join("uploads/screenshots", shot.filename),
-    ...shot.outputs.map(o => path.join("outputs/screenshots", o.filename))
-  ];
-  files.forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) { } });
-
-  await Screenshot.deleteOne({ _id: shot._id });
-  await Task.deleteMany({ targetType: "screenshot", targetId: shot._id });
-  res.json({ message: "Screenshot deleted" });
 };

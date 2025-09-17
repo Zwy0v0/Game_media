@@ -1,21 +1,33 @@
-version: "1"
+version: "3.8"
 services:
   app:
-    image: 901444280953.dkr.ecr.ap-southeast-2.amazonaws.com/game-media-app
+    build: .
     ports:
       - "8080:8080"
     environment:
+      - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/gamemedia
       - JWT_SECRET=supersecret
-    volumes:
-      - ./uploads:/app/uploads
-      - ./outputs:/app/outputs
+      - AWS_REGION=ap-southeast-2
+      - S3_BUCKET_NAME=your-game-media-bucket
+      - DYNAMODB_TABLE_PREFIX=game-media
+      - COGNITO_USER_POOL_ID=your_user_pool_id
+      - COGNITO_CLIENT_ID=your_client_id
+      - PARAMETER_STORE_PREFIX=/game-media-app
+      - SECRETS_MANAGER_SECRET_NAME=game-media-app-secrets
+      - ELASTICACHE_ENDPOINT=your_elasticache_endpoint
+      - ELASTICACHE_PORT=11211
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
   mongo:
     image: mongo:5
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
+    restart: unless-stopped
 
 volumes:
   mongo-data:

@@ -1,15 +1,11 @@
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-const Video = require("../models/Video");
-const Task = require("../models/Task");
+const { awsService } = require("../services/awsService");
+const { cacheService } = require("../services/cacheService");
 const { transcodeMultiRes } = require("../utils/ffmpeg");
 const { fetchWikiGameInfo } = require("../utils/gameInfo");
 
-const storage = multer.diskStorage({
-  destination: "uploads/videos",
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
-});
+// 修改multer配置，使用内存存储
+const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 exports.uploadMiddleware = upload.single("video");
@@ -20,76 +16,113 @@ exports.uploadMiddleware = upload.single("video");
 exports.uploadVideo = async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No video file uploaded. Field name must be 'video'." });
 
-  const video = await Video.create({
-    filename: req.file.filename,
-    mimeType: req.file.mimetype,
-    game: req.body.game || "",
-    owner: req.user.id
-  });
-
-  if (video.game) {
-    const info = await fetchWikiGameInfo(video.game);
-    if (info) { video.gameInfo = info; await video.save(); }
+  try {
+    // 生成唯一文件名
+    const filename = Date.now() + '_' + req.file.originalname;
+    const s3Key = `videos/${filename}`;
+    
+    // 上传到S3
+    await awsService.uploadToS3(s3Key, req.file.buffer, req.file.mimetype);
+    
+    // 保存元数据到DynamoDB
+    const videoData = awsService.toDynamoDBItem({
+      id: filename,
+      filename: filename,
+      s3Key: s3Key,
+      mimeType: req.file.mimetype,
+      game: req.body.game || "",
+      owner: req.user.username,
+      createdAt: new Date().toISOString(),
+      transcoded: false
+    });
+    
+    await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, videoData);
+    
+    // 获取游戏信息（如果有）
+    let gameInfo = null;
+    if (req.body.game) {
+      gameInfo = await fetchWikiGameInfo(req.body.game);
+      if (gameInfo) {
+        const updatedVideoData = {
+          ...videoData,
+          gameInfo: { S: JSON.stringify(gameInfo) }
+        };
+        await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, updatedVideoData);
+      }
+    }
+    
+    // 缓存元数据
+    await cacheService.cacheMediaMetadata(filename, {
+      filename: filename,
+      game: req.body.game || "",
+      owner: req.user.username,
+      transcoded: false,
+      gameInfo: gameInfo
+    });
+    
+    res.json({ 
+      videoId: filename, 
+      taskId: filename, 
+      gameInfo: gameInfo 
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
   }
-
-  const task = await Task.create({
-    type: "transcode",
-    targetType: "video",
-    targetId: video._id,
-    owner: req.user.id,
-    status: "queued",
-    params: { multi: ["720p", "480p", "360p"] }
-  });
-
-  res.json({ videoId: video._id, taskId: task._id, gameInfo: video.gameInfo || null });
 };
 
 /**
  * 触发转码（CPU密集）：查找/创建任务 → 运行 → 更新 Video.outputs
  */
 exports.transcode = async (req, res) => {
-  const video = await Video.findById(req.params.id);
-  if (!video) return res.status(404).json({ error: "Video not found" });
-
-  // 权限：user 只能操作自己的
-  if (req.user.role !== "admin" && String(video.owner) !== req.user.id) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  // 找到最近一个 queued 任务（否则新建一个）
-  let task = await Task.findOne({ targetType: "video", targetId: video._id, type: "transcode", status: "queued" })
-    .sort({ createdAt: -1 });
-
-  if (!task) {
-    task = await Task.create({
-      type: "transcode",
-      targetType: "video",
-      targetId: video._id,
-      owner: req.user.id,
-      status: "queued",
-      params: { multi: ["720p", "480p", "360p"] }
-    });
-  }
-
-  // 执行
   try {
-    task.status = "running";
-    await task.save();
-
-    const outs = await transcodeMultiRes(video.filename);
-    video.outputs = outs;
-    video.transcoded = true;
-    await video.save();
-
-    task.status = "done";
-    await task.save();
-
-    res.json({ taskId: task._id, status: task.status, outputs: outs });
-  } catch (e) {
-    task.status = "failed";
-    task.error = e.message || String(e);
-    await task.save();
-    return res.status(500).json({ taskId: task._id, status: task.status, error: task.error });
+    const videoId = req.params.id;
+    
+    // 从DynamoDB获取视频信息
+    const video = await awsService.getItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, {
+      id: { S: videoId }
+    });
+    
+    if (!video.Item) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+    
+    // 权限检查
+    if (req.user.role !== "admin" && video.Item.owner.S !== req.user.username) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    // 从S3下载原始文件
+    const s3Object = await awsService.getFromS3(video.Item.s3Key.S);
+    const fileBuffer = await s3Object.Body.transformToByteArray();
+    
+    // 转码视频
+    const outputs = await transcodeMultiRes(fileBuffer, videoId);
+    
+    // 更新DynamoDB记录
+    const updatedVideo = {
+      ...video.Item,
+      transcoded: { BOOL: true },
+      outputs: { S: JSON.stringify(outputs) }
+    };
+    
+    await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, updatedVideo);
+    
+    // 更新缓存
+    await cacheService.cacheMediaMetadata(videoId, {
+      ...awsService.fromDynamoDBItem(video.Item),
+      transcoded: true,
+      outputs: outputs
+    });
+    
+    res.json({ 
+      taskId: videoId, 
+      status: "done", 
+      outputs: outputs 
+    });
+  } catch (error) {
+    console.error('Transcode error:', error);
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -98,55 +131,126 @@ exports.transcode = async (req, res) => {
  * /api/v1/videos?game=LoL&transcoded=true&page=1&limit=10&sort=-createdAt
  */
 exports.listVideos = async (req, res) => {
-  const { page = 1, limit = 5, sort = "-createdAt", game, transcoded } = req.query;
-
-  const filter = {};
-  if (game) filter.game = game;
-  if (typeof transcoded !== "undefined") filter.transcoded = transcoded === "true";
-
-  // 权限：user 只看自己的
-  if (req.user.role !== "admin") filter.owner = req.user.id;
-
-  const q = Video.find(filter).populate("owner", "username role");
-  if (sort) q.sort(sort);
-  const total = await Video.countDocuments(filter);
-  const items = await q.skip((page - 1) * limit).limit(Number(limit));
-
-  res.json({ total, page: Number(page), limit: Number(limit), items });
-
+  try {
+    const { page = 1, limit = 5, game, transcoded } = req.query;
+    
+    // 构建查询条件
+    let filterExpression = "";
+    let expressionAttributeValues = {};
+    
+    if (game) {
+      filterExpression += "game = :game";
+      expressionAttributeValues[":game"] = { S: game };
+    }
+    
+    if (typeof transcoded !== "undefined") {
+      if (filterExpression) filterExpression += " AND ";
+      filterExpression += "transcoded = :transcoded";
+      expressionAttributeValues[":transcoded"] = { BOOL: transcoded === "true" };
+    }
+    
+    if (req.user.role !== "admin") {
+      if (filterExpression) filterExpression += " AND ";
+      filterExpression += "owner = :owner";
+      expressionAttributeValues[":owner"] = { S: req.user.username };
+    }
+    
+    // 从DynamoDB查询视频列表
+    const result = await awsService.scanItems(
+      `${process.env.DYNAMODB_TABLE_PREFIX}-videos`,
+      filterExpression || undefined,
+      expressionAttributeValues
+    );
+    
+    const items = result.Items.map(item => awsService.fromDynamoDBItem(item));
+    
+    // 分页
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const paginatedItems = items.slice(startIndex, endIndex);
+    
+    res.json({ 
+      total: items.length, 
+      page: Number(page), 
+      limit: Number(limit), 
+      items: paginatedItems 
+    });
+  } catch (error) {
+    console.error('List error:', error);
+    res.status(500).json({ error: error.message });
+  }
 };
 
 /**
  * 单条明细
  */
 exports.getVideo = async (req, res) => {
-  const video = await Video.findById(req.params.id).populate("owner", "username role");
-  if (!video) return res.status(404).json({ error: "Video not found" });
-  if (req.user.role !== "admin" && String(video.owner._id) !== req.user.id) {
-    return res.status(403).json({ error: "Forbidden" });
+  try {
+    const videoId = req.params.id;
+    
+    // 从DynamoDB获取视频信息
+    const video = await awsService.getItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, {
+      id: { S: videoId }
+    });
+    
+    if (!video.Item) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+    
+    // 权限检查
+    if (req.user.role !== "admin" && video.Item.owner.S !== req.user.username) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    const videoData = awsService.fromDynamoDBItem(video.Item);
+    res.json(videoData);
+  } catch (error) {
+    console.error('Get error:', error);
+    res.status(500).json({ error: error.message });
   }
-  res.json(video);
 };
 
-/**
- * 删除：物理文件 + 文档
- */
 exports.deleteVideo = async (req, res) => {
-  const video = await Video.findById(req.params.id);
-  if (!video) return res.status(404).json({ error: "Video not found" });
-  if (req.user.role !== "admin" && String(video.owner) !== req.user.id) {
-    return res.status(403).json({ error: "Forbidden" });
+  try {
+    const videoId = req.params.id;
+    
+    // 从DynamoDB获取视频信息
+    const video = await awsService.getItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, {
+      id: { S: videoId }
+    });
+    
+    if (!video.Item) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+    
+    // 权限检查
+    if (req.user.role !== "admin" && video.Item.owner.S !== req.user.username) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    // 从S3删除文件
+    await awsService.deleteFromS3(video.Item.s3Key.S);
+    
+    // 删除转码后的文件
+    if (video.Item.outputs) {
+      const outputs = JSON.parse(video.Item.outputs.S);
+      for (const output of outputs) {
+        await awsService.deleteFromS3(output.s3Key);
+      }
+    }
+    
+    // 从DynamoDB删除记录
+    await awsService.deleteItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, {
+      id: { S: videoId }
+    });
+    
+    // 从缓存删除
+    await cacheService.delete(`media:${videoId}`);
+    
+    res.json({ message: "Video deleted" });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ error: error.message });
   }
-
-  // 删除磁盘文件（容错）
-  const files = [
-    path.join("uploads/videos", video.filename),
-    ...video.outputs.map(o => path.join("outputs/videos", o.filename))
-  ];
-  files.forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) { } });
-
-  await Video.deleteOne({ _id: video._id });
-  await Task.deleteMany({ targetType: "video", targetId: video._id });
-  res.json({ message: "Video deleted" });
 };
 
