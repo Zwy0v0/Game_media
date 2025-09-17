@@ -86,7 +86,7 @@ router.post('/presigned-batch', async (req, res) => {
 });
 
 // 获取文件信息
-router.get('/file-info/:s3Key(*)', async (req, res) => {
+router.get('/file-info/:s3Key', async (req, res) => {
   try {
     const s3Key = req.params.s3Key;
     
@@ -114,7 +114,7 @@ router.get('/file-info/:s3Key(*)', async (req, res) => {
 });
 
 // 删除文件
-router.delete('/file/:s3Key(*)', async (req, res) => {
+router.delete('/file/:s3Key', async (req, res) => {
   try {
     const s3Key = req.params.s3Key;
     
