@@ -1,6 +1,5 @@
 const jwt = require("jsonwebtoken");
 const { awsService } = require("../services/awsService");
-const { cacheService } = require("../services/cacheService");
 
 // 用户注册
 exports.register = async (req, res) => {
@@ -61,8 +60,7 @@ exports.login = async (req, res) => {
         { expiresIn: "1h" }
       );
 
-      // 缓存用户会话
-      await cacheService.cacheUserSession(username, token, 3600);
+      // Cache removed - using JWT tokens only
       
       res.json({ 
         token,
@@ -87,13 +85,7 @@ exports.login = async (req, res) => {
 // 用户登出
 exports.logout = async (req, res) => {
   try {
-    const { username } = req.body;
-    
-    if (username) {
-      // 删除缓存中的用户会话
-      await cacheService.deleteUserSession(username);
-    }
-    
+    // Cache removed - JWT tokens are stateless, no server-side logout needed
     res.json({ message: "Logged out successfully" });
   } catch (error) {
     console.error('Logout error:', error);

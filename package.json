@@ -30,7 +30,6 @@
     "@aws-sdk/client-ssm": "^3.0.0",
     "@aws-sdk/client-secrets-manager": "^3.0.0",
     "@aws-sdk/s3-request-presigner": "^3.0.0",
-    "memcached": "^2.2.2",
     "aws-sdk": "^2.0.0"
   },
   "devDependencies": {

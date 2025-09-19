@@ -1,6 +1,5 @@
 const multer = require("multer");
 const { awsService } = require("../services/awsService");
-const { cacheService } = require("../services/cacheService");
 const { transcodeMultiRes } = require("../utils/ffmpeg");
 const { fetchWikiGameInfo } = require("../utils/gameInfo");
 
@@ -51,14 +50,7 @@ exports.uploadVideo = async (req, res) => {
       }
     }
     
-    // 缓存元数据
-    await cacheService.cacheMediaMetadata(filename, {
-      filename: filename,
-      game: req.body.game || "",
-      owner: req.user.username,
-      transcoded: false,
-      gameInfo: gameInfo
-    });
+    // Cache removed - metadata stored in DynamoDB only
     
     res.json({ 
       videoId: filename, 
@@ -108,12 +100,7 @@ exports.transcode = async (req, res) => {
     
     await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-videos`, updatedVideo);
     
-    // 更新缓存
-    await cacheService.cacheMediaMetadata(videoId, {
-      ...awsService.fromDynamoDBItem(video.Item),
-      transcoded: true,
-      outputs: outputs
-    });
+    // Cache removed - metadata updated in DynamoDB only
     
     res.json({ 
       taskId: videoId, 
@@ -244,8 +231,7 @@ exports.deleteVideo = async (req, res) => {
       id: { S: videoId }
     });
     
-    // 从缓存删除
-    await cacheService.delete(`media:${videoId}`);
+    // Cache removed - data deleted from DynamoDB only
     
     res.json({ message: "Video deleted" });
   } catch (error) {

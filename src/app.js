@@ -8,7 +8,6 @@ require("dotenv").config();
 
 // 新增AWS服务导入
 const { initializeAWSServices } = require("./services/awsService");
-const { initializeCache } = require("./services/cacheService");
 
 const authRoutes = require("./routes/auth");
 const videoRoutes = require("./routes/videos");
@@ -37,12 +36,7 @@ initializeAWSServices().then(() => {
   console.error("AWS services initialization failed:", err);
 });
 
-// 初始化缓存服务
-initializeCache().then(() => {
-  console.log("Cache service initialized");
-}).catch(err => {
-  console.error("Cache service initialization failed:", err);
-});
+// Cache service removed - using DynamoDB for data storage only
 
 // 保持MongoDB连接（用于非核心数据）
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://mongo:27017/gamemedia';

@@ -29,10 +29,6 @@ PARAMETER_STORE_PREFIX=/game-media-app
 
 # Secrets Manager配置
 SECRETS_MANAGER_SECRET_NAME=game-media-app-secrets
-
-# ElastiCache配置
-ELASTICACHE_ENDPOINT=your_elasticache_endpoint
-ELASTICACHE_PORT=11211
 ```
 
 ## 配置说明
@@ -44,4 +40,3 @@ ELASTICACHE_PORT=11211
 - `COGNITO_CLIENT_ID`: Cognito客户端ID
 - `PARAMETER_STORE_PREFIX`: Parameter Store参数前缀
 - `SECRETS_MANAGER_SECRET_NAME`: Secrets Manager密钥名称
-- `ELASTICACHE_ENDPOINT`: ElastiCache集群端点

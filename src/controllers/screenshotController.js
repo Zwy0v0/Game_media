@@ -1,6 +1,5 @@
 const multer = require("multer");
 const { awsService } = require("../services/awsService");
-const { cacheService } = require("../services/cacheService");
 const { processImageMulti } = require("../utils/sharp");
 
 // 修改multer配置，使用内存存储
@@ -34,13 +33,7 @@ exports.uploadScreenshot = async (req, res) => {
     
     await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, screenshotData);
     
-    // 缓存元数据
-    await cacheService.cacheMediaMetadata(filename, {
-      filename: filename,
-      game: req.body.game || "",
-      owner: req.user.username,
-      processed: false
-    });
+    // Cache removed - metadata stored in DynamoDB only
     
     res.json({ 
       id: filename,
@@ -92,12 +85,7 @@ exports.processScreenshot = async (req, res) => {
     
     await awsService.putItem(`${process.env.DYNAMODB_TABLE_PREFIX}-screenshots`, updatedScreenshot);
     
-    // 更新缓存
-    await cacheService.cacheMediaMetadata(screenshotId, {
-      ...awsService.fromDynamoDBItem(screenshot.Item),
-      processed: true,
-      outputs: outputs
-    });
+    // Cache removed - metadata updated in DynamoDB only
     
     res.json({ 
       taskId: screenshotId, 
@@ -224,8 +212,7 @@ exports.deleteShot = async (req, res) => {
       id: { S: screenshotId }
     });
     
-    // 从缓存删除
-    await cacheService.delete(`media:${screenshotId}`);
+    // Cache removed - data deleted from DynamoDB only
     
     res.json({ message: "Screenshot deleted" });
   } catch (error) {

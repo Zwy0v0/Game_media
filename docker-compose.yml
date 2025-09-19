@@ -15,8 +15,6 @@ services:
       - COGNITO_CLIENT_ID=your_client_id
       - PARAMETER_STORE_PREFIX=/game-media-app
       - SECRETS_MANAGER_SECRET_NAME=game-media-app-secrets
-      - ELASTICACHE_ENDPOINT=your_elasticache_endpoint
-      - ELASTICACHE_PORT=11211
     depends_on:
       - mongo
     restart: unless-stopped
