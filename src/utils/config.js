@@ -30,3 +30,4 @@ async function getSecretJson(secretId) {
 module.exports = { getParameter, getSecretJson, region };
 
 
+

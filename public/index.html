@@ -61,7 +61,7 @@ async function login(){
     method:"POST", headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ username: email.value, password: password.value })
   });
-  const d = await r.json(); token = d.idToken || d.accessToken || ""; authStatus.textContent = token? "OK" : "Failed";
+  const d = await r.json(); token = d.IdToken || d.AccessToken || ""; authStatus.textContent = token? "OK" : "Failed";
 }
 async function registerUser(){
   const r = await fetch(`${BASE}/api/v1/auth/register`,{
