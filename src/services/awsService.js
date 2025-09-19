@@ -106,7 +106,7 @@ class AWSService {
   // Cognito操作
   async createUser(username, email, password) {
     const command = new AdminCreateUserCommand({
-      UserPoolId: process.env.COGNITO_USER_POOL_ID||'ap-southeast-2_W4wRp7w0P',
+      UserPoolId: process.env.COGNITO_USER_POOL_ID,
       Username: username,
       UserAttributes: [
         { Name: 'email', Value: email },
