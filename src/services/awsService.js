@@ -1,6 +1,6 @@
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { DynamoDBClient, PutItemCommand, GetItemCommand, QueryCommand, DeleteItemCommand, ScanCommand } = require('@aws-sdk/client-dynamodb');
-const { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminInitiateAuthCommand, AdminGetUserCommand } = require('@aws-sdk/client-cognito-identity-provider');
+const { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminInitiateAuthCommand, AdminGetUserCommand, AdminConfirmSignUpCommand, AdminSetUserPasswordCommand } = require('@aws-sdk/client-cognito-identity-provider');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -110,10 +110,10 @@ class AWSService {
       Username: username,
       UserAttributes: [
         { Name: 'email', Value: email },
-        { Name: 'email_verified', Value: 'true' }
+        { Name: 'email_verified', Value: 'false' } // Require email confirmation
       ],
       TemporaryPassword: password,
-      MessageAction: 'SUPPRESS'
+      MessageAction: 'SEND' // Send confirmation email
     });
     return await this.cognitoClient.send(command);
   }
@@ -135,6 +135,25 @@ class AWSService {
     const command = new AdminGetUserCommand({
       UserPoolId: process.env.COGNITO_USER_POOL_ID,
       Username: username
+    });
+    return await this.cognitoClient.send(command);
+  }
+
+  async confirmUserSignUp(username, confirmationCode) {
+    const command = new AdminConfirmSignUpCommand({
+      UserPoolId: process.env.COGNITO_USER_POOL_ID,
+      Username: username,
+      ConfirmationCode: confirmationCode
+    });
+    return await this.cognitoClient.send(command);
+  }
+
+  async setUserPassword(username, password) {
+    const command = new AdminSetUserPasswordCommand({
+      UserPoolId: process.env.COGNITO_USER_POOL_ID,
+      Username: username,
+      Password: password,
+      Permanent: true
     });
     return await this.cognitoClient.send(command);
   }

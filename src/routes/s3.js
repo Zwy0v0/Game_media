@@ -1,9 +1,10 @@
 const express = require('express');
 const { awsService } = require('../services/awsService');
+const auth = require('../middleware/auth');
 const router = express.Router();
 
-// 生成预签名URL用于上传
-router.post('/presigned-upload', async (req, res) => {
+// 生成预签名URL用于上传 (requires authentication)
+router.post('/presigned-upload', auth(), async (req, res) => {
   try {
     const { filename, contentType } = req.body;
     
@@ -11,13 +12,16 @@ router.post('/presigned-upload', async (req, res) => {
       return res.status(400).json({ error: 'Filename and contentType are required' });
     }
     
-    const s3Key = `uploads/${filename}`;
+    // Include user identifier in S3 key for better organization
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const s3Key = `uploads/${req.user.username}/${timestamp}-${filename}`;
     const presignedUrl = await awsService.generatePresignedUploadUrl(s3Key, contentType);
-    
-    res.json({ 
-      presignedUrl, 
+
+    res.json({
+      presignedUrl,
       s3Key,
-      expiresIn: 3600 
+      expiresIn: 3600,
+      uploadedBy: req.user.username
     });
   } catch (error) {
     console.error('Presigned upload URL error:', error);
@@ -25,8 +29,8 @@ router.post('/presigned-upload', async (req, res) => {
   }
 });
 
-// 生成预签名URL用于下载
-router.post('/presigned-download', async (req, res) => {
+// 生成预签名URL用于下载 (requires authentication)
+router.post('/presigned-download', auth(), async (req, res) => {
   try {
     const { s3Key } = req.body;
     

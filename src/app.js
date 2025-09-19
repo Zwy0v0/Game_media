@@ -10,9 +10,11 @@ require("dotenv").config();
 const { initializeAWSServices } = require("./services/awsService");
 
 const authRoutes = require("./routes/auth");
+const dynamoAuthRoutes = require("./routes/dynamoAuth");
 const videoRoutes = require("./routes/videos");
 const screenshotRoutes = require("./routes/screenshots");
 const s3Routes = require("./routes/s3");
+const healthRoutes = require("./routes/health");
 
 const app = express();
 
@@ -26,9 +28,11 @@ app.use(express.static('public'));
 // app.use("/outputs", express.static(path.join(__dirname, "../outputs")));
 
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/dynamo-auth", dynamoAuthRoutes);
 app.use("/api/v1/videos", videoRoutes);
 app.use("/api/v1/screenshots", screenshotRoutes);
 app.use("/api/v1/s3", s3Routes);
+app.use("/api/v1/health", healthRoutes);
 // 初始化AWS服务
 initializeAWSServices().then(() => {
   console.log("AWS services initialized");

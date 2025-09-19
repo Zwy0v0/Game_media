@@ -1,15 +1,20 @@
-FROM node:18
+FROM node:18-alpine
 
 WORKDIR /app
 
+# Install ffmpeg first (smaller base image)
+RUN apk add --no-cache ffmpeg
+
+# Copy package files
 COPY package*.json ./
-RUN npm install
 
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install dependencies with optimizations
+RUN npm ci --only=production && npm cache clean --force
 
+# Copy source code
 COPY . .
 
-# 创建临时目录（用于FFmpeg处理）
+# Create temp directory
 RUN mkdir -p /tmp
 
 EXPOSE 8080
