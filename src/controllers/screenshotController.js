@@ -1,29 +1,16 @@
-const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const Screenshot = require("../models/Screenshot");
-const Task = require("../models/Task");
+const { media } = require("../utils/dynamo");
 const { processImageMulti } = require("../utils/sharp");
+const { createPresignedGetUrl } = require("../utils/s3");
+const { putTaskStatus, updateTaskStatus } = require("../utils/dynamo");
 
-const storage = multer.diskStorage({
-  destination: "uploads/screenshots",
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
-});
-const upload = multer({ storage });
+exports.createScreenshotRecord = async (req, res) => {
+  const { key, mimeType, game } = req.body || {};
+  if (!key) return res.status(400).json({ error: "key required" });
 
-exports.uploadMiddleware = upload.single("screenshot");
-
-exports.uploadScreenshot = async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No screenshot uploaded. Field 'screenshot' required." });
-
-  const shot = await Screenshot.create({
-    filename: req.file.filename,
-    mimeType: req.file.mimetype,
-    game: req.body.game || "",
-    owner: req.user.id
-  });
-
-  res.json(shot);
+  const shot = await media.createScreenshot({ id: String(Date.now()), filename: key, mimeType: mimeType || "", game: game || "", owner: req.user.sub || req.user.id, processed: false, outputs: [], createdAt: Date.now() });
+  res.json({ id: shot.id });
 };
 
 /**
@@ -31,38 +18,32 @@ exports.uploadScreenshot = async (req, res) => {
  * 返回 taskId + 状态
  */
 exports.processScreenshot = async (req, res) => {
-  const shot = await Screenshot.findById(req.params.id);
+  const shot = await media.getScreenshot(req.params.id);
   if (!shot) return res.status(404).json({ error: "Screenshot not found" });
-  if (req.user.role !== "admin" && String(shot.owner) !== req.user.id) {
+  if (!(req.user.groups || []).includes("Admin") && String(shot.owner) !== (req.user.sub || req.user.id)) {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const task = await Task.create({
-    type: "image-process",
-    targetType: "screenshot",
-    targetId: shot._id,
-    owner: req.user.id,
-    status: "queued",
-    params: { sizes: ["thumb", "medium"] }
-  });
+  const task = { _id: String(Date.now()), type: "image-process", targetType: "screenshot", targetId: shot.id, owner: req.user.sub || req.user.id, status: "queued", params: { sizes: ["thumb","medium"] }, createdAt: Date.now() };
 
   try {
     task.status = "running";
     await task.save();
+    await putTaskStatus({ taskId: String(task._id), status: "running", progress: 0, updatedAt: Date.now() });
 
     const outs = await processImageMulti(shot.filename);
-    shot.outputs = outs;
-    shot.processed = true;
-    await shot.save();
+    await media.updateScreenshot(shot.id, { outputs: outs, processed: true });
 
     task.status = "done";
     await task.save();
+    await updateTaskStatus(String(task._id), { status: "done", progress: 100, updatedAt: Date.now() });
 
     res.json({ taskId: task._id, status: task.status, outputs: outs });
   } catch (e) {
     task.status = "failed";
     task.error = e.message || String(e);
     await task.save();
+    await updateTaskStatus(String(task._id), { status: "failed", error: task.error, updatedAt: Date.now() });
     return res.status(500).json({ taskId: task._id, status: task.status, error: task.error });
   }
 };
@@ -73,23 +54,15 @@ exports.processScreenshot = async (req, res) => {
 exports.listShots = async (req, res) => {
   const { page = 1, limit = 5, sort = "-createdAt", game, processed } = req.query;
 
-  const filter = {};
-  if (game) filter.game = game;
-  if (typeof processed !== "undefined") filter.processed = processed === "true";
-  if (req.user.role !== "admin") filter.owner = req.user.id;
-
-  const q = Screenshot.find(filter).populate("owner", "username role");
-  if (sort) q.sort(sort);
-  const total = await Screenshot.countDocuments(filter);
-  const items = await q.skip((page - 1) * limit).limit(Number(limit));
-
-  res.json({ total, page: Number(page), limit: Number(limit), items });
+  const owner = (!(req.user.groups || []).includes("Admin")) ? (req.user.sub || req.user.id) : null;
+  const items = await media.listScreenshotsByOwner(owner);
+  res.json({ total: items.length, page: Number(page), limit: Number(limit), items });
 };
 
 exports.getShot = async (req, res) => {
-  const shot = await Screenshot.findById(req.params.id).populate("owner", "username role");
+  const shot = await media.getScreenshot(req.params.id);
   if (!shot) return res.status(404).json({ error: "Screenshot not found" });
-  if (req.user.role !== "admin" && String(shot.owner._id) !== req.user.id) {
+  if (!(req.user.groups || []).includes("Admin") && String(shot.owner) !== (req.user.sub || req.user.id)) {
     return res.status(403).json({ error: "Forbidden" });
   }
   res.json(shot);
@@ -97,19 +70,11 @@ exports.getShot = async (req, res) => {
 
 
 exports.deleteShot = async (req, res) => {
-  const shot = await Screenshot.findById(req.params.id);
+  const shot = await media.getScreenshot(req.params.id);
   if (!shot) return res.status(404).json({ error: "Screenshot not found" });
-  if (req.user.role !== "admin" && String(shot.owner) !== req.user.id) {
+  if (!(req.user.groups || []).includes("Admin") && String(shot.owner) !== (req.user.sub || req.user.id)) {
     return res.status(403).json({ error: "Forbidden" });
   }
-
-  const files = [
-    path.join("uploads/screenshots", shot.filename),
-    ...shot.outputs.map(o => path.join("outputs/screenshots", o.filename))
-  ];
-  files.forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) { } });
-
-  await Screenshot.deleteOne({ _id: shot._id });
-  await Task.deleteMany({ targetType: "screenshot", targetId: shot._id });
+  await media.deleteScreenshot(shot.id);
   res.json({ message: "Screenshot deleted" });
 };

@@ -1,25 +1,55 @@
-const jwt = require("jsonwebtoken");
-const User = require("../models/User");
+const { CognitoIdentityProviderClient, SignUpCommand, ConfirmSignUpCommand, InitiateAuthCommand } = require("@aws-sdk/client-cognito-identity-provider");
 
-// 初始化用两个硬编码用户
-async function initUsers() {
-  const count = await User.countDocuments();
-  if (count === 0) {
-    await User.create({ username: "admin", password: "admin123", role: "admin" });
-    await User.create({ username: "player", password: "player123", role: "user" });
+const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-southeast-2";
+const client = new CognitoIdentityProviderClient({ region });
+
+exports.register = async (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !email || !password) return res.status(400).json({ error: "username, email, password required" });
+  try {
+    const cmd = new SignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      Username: username,
+      Password: password,
+      UserAttributes: [
+        { Name: "email", Value: email }
+      ]
+    });
+    const out = await client.send(cmd);
+    res.json({ userSub: out.UserSub, codeDelivery: out.CodeDeliveryDetails });
+  } catch (e) {
+    res.status(400).json({ error: e.message || String(e) });
   }
-}
-initUsers();
+};
+
+exports.confirm = async (req, res) => {
+  const { username, code } = req.body;
+  if (!username || !code) return res.status(400).json({ error: "username, code required" });
+  try {
+    const cmd = new ConfirmSignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      Username: username,
+      ConfirmationCode: code
+    });
+    await client.send(cmd);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message || String(e) });
+  }
+};
 
 exports.login = async (req, res) => {
   const { username, password } = req.body;
-  const user = await User.findOne({ username, password });
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-  const JWT_SECRET = process.env.JWT_SECRET || "supersecret"
-  const token = jwt.sign(
-    { id: user._id, username: user.username, role: user.role },
-    JWT_SECRET,
-    { expiresIn: "1h" }
-  );
-  res.json({ token });
+  if (!username || !password) return res.status(400).json({ error: "username, password required" });
+  try {
+    const cmd = new InitiateAuthCommand({
+      AuthFlow: "USER_PASSWORD_AUTH",
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      AuthParameters: { USERNAME: username, PASSWORD: password }
+    });
+    const out = await client.send(cmd);
+    res.json(out.AuthenticationResult);
+  } catch (e) {
+    res.status(401).json({ error: e.message || String(e) });
+  }
 };

@@ -9,18 +9,32 @@
   <h1>Game Media Client</h1>
 
   <fieldset>
-    <legend>Auth</legend>
-    <input id="u" placeholder="username" value="admin">
-    <input id="p" placeholder="password" value="admin123" type="password">
+    <legend>Auth (Cognito)</legend>
+    <input id="email" placeholder="email or username">
+    <input id="password" placeholder="password" type="password">
     <button onclick="login()">Login</button>
     <span id="authStatus"></span>
+    <details>
+      <summary>Register / Confirm</summary>
+      <div>
+        <input id="r_user" placeholder="username">
+        <input id="r_email" placeholder="email">
+        <input id="r_pass" placeholder="password" type="password">
+        <button onclick="registerUser()">Register</button>
+      </div>
+      <div>
+        <input id="c_user" placeholder="username">
+        <input id="c_code" placeholder="code">
+        <button onclick="confirmUser()">Confirm</button>
+      </div>
+    </details>
   </fieldset>
 
   <fieldset>
     <legend>Videos</legend>
     <input id="vg" placeholder="game name" value="LoL">
     <input id="vf" type="file" accept="video/*">
-    <button onclick="uploadVideo()">Upload</button>
+    <button onclick="uploadVideo()">Upload (S3 presigned)</button>
     <input id="vid" placeholder="videoId">
     <button onclick="transcode()">Transcode</button>
     <button onclick="listVideos()">List</button>
@@ -31,7 +45,7 @@
     <legend>Screenshots</legend>
     <input id="sg" placeholder="game name" value="LoL">
     <input id="sf" type="file" accept="image/*">
-    <button onclick="uploadShot()">Upload</button>
+    <button onclick="uploadShot()">Upload (S3 presigned)</button>
     <input id="sid" placeholder="screenshotId">
     <button onclick="processShot()">Process</button>
     <button onclick="listShots()">List</button>
@@ -45,16 +59,32 @@ let token = "";
 async function login(){
   const r = await fetch(`${BASE}/api/v1/auth/login`,{
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ username: u.value, password: p.value })
+    body: JSON.stringify({ username: email.value, password: password.value })
   });
-  const d = await r.json(); token = d.token || ""; authStatus.textContent = token? "OK" : "Failed";
+  const d = await r.json(); token = d.idToken || d.accessToken || ""; authStatus.textContent = token? "OK" : "Failed";
+}
+async function registerUser(){
+  const r = await fetch(`${BASE}/api/v1/auth/register`,{
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ username: r_user.value, email: r_email.value, password: r_pass.value })
+  });
+  const d = await r.json(); alert("register: " + JSON.stringify(d));
+}
+async function confirmUser(){
+  const r = await fetch(`${BASE}/api/v1/auth/confirm`,{
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ username: c_user.value, code: c_code.value })
+  });
+  const d = await r.json(); alert("confirm: " + JSON.stringify(d));
 }
 
 async function uploadVideo(){
   const f = vf.files[0]; if(!f) return alert("pick a video");
-  const form = new FormData(); form.append("video", f); form.append("game", vg.value);
-  const r = await fetch(`${BASE}/api/v1/videos/upload`, { method:"POST", headers:{ Authorization:`Bearer ${token}` }, body: form });
-  const d = await r.json(); vid.value = d.videoId || ""; alert("uploaded: " + JSON.stringify(d));
+  const req1 = await fetch(`${BASE}/api/v1/videos/upload-url`, { method:"POST", headers:{ "Content-Type":"application/json", Authorization:`Bearer ${token}` }, body: JSON.stringify({ fileName: f.name, contentType: f.type }) });
+  const u1 = await req1.json();
+  await fetch(u1.uploadUrl, { method:"PUT", headers:{ "Content-Type": f.type }, body: f });
+  const req2 = await fetch(`${BASE}/api/v1/videos`, { method:"POST", headers:{ "Content-Type":"application/json", Authorization:`Bearer ${token}` }, body: JSON.stringify({ key: u1.key, mimeType: f.type, game: vg.value }) });
+  const d = await req2.json(); vid.value = d.id || ""; alert("uploaded: " + JSON.stringify(d));
 }
 async function transcode(){
   if(!vid.value) return alert("set videoId");
@@ -78,9 +108,11 @@ async function delVideo(id){
 
 async function uploadShot(){
   const f = sf.files[0]; if(!f) return alert("pick an image");
-  const form = new FormData(); form.append("screenshot", f); form.append("game", sg.value);
-  const r = await fetch(`${BASE}/api/v1/screenshots/upload`, { method:"POST", headers:{ Authorization:`Bearer ${token}` }, body: form });
-  const d = await r.json(); sid.value = d._id || ""; alert("uploaded: " + JSON.stringify(d));
+  const req1 = await fetch(`${BASE}/api/v1/screenshots/upload-url`, { method:"POST", headers:{ "Content-Type":"application/json", Authorization:`Bearer ${token}` }, body: JSON.stringify({ fileName: f.name, contentType: f.type }) });
+  const u1 = await req1.json();
+  await fetch(u1.uploadUrl, { method:"PUT", headers:{ "Content-Type": f.type }, body: f });
+  const req2 = await fetch(`${BASE}/api/v1/screenshots`, { method:"POST", headers:{ "Content-Type":"application/json", Authorization:`Bearer ${token}` }, body: JSON.stringify({ key: u1.key, mimeType: f.type, game: sg.value }) });
+  const d = await req2.json(); sid.value = d.id || ""; alert("uploaded: " + JSON.stringify(d));
 }
 async function processShot(){
   if(!sid.value) return alert("set screenshotId");
