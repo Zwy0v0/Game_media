@@ -11,11 +11,21 @@ exports.createVideoRecord = async (req, res) => {
   const { key, mimeType, game } = req.body || {};
   if (!key) return res.status(400).json({ error: "key required" });
 
-  const video = await media.createVideo({ id: String(Date.now()), filename: key, mimeType: mimeType || "", game: game || "", owner: req.user.sub, transcoded: false, outputs: [], createdAt: Date.now() });
+  const video = await media.createVideo({ 
+    "qut-username": req.user.email,
+    id: String(Date.now()), 
+    filename: key, 
+    mimeType: mimeType || "", 
+    game: game || "", 
+    owner: req.user.sub, 
+    transcoded: false, 
+    outputs: [], 
+    createdAt: Date.now() 
+  }, req);
 
   if (video.game) {
     const info = await fetchWikiGameInfo(video.game);
-    if (info) { await media.updateVideo(video.id, { gameInfo: info }); }
+    if (info) { await media.updateVideo(video.id, { gameInfo: info }, req); }
   }
 
   res.json({ id: video.id, gameInfo: video.gameInfo || null });
@@ -25,11 +35,14 @@ exports.createVideoRecord = async (req, res) => {
  * 触发转码（CPU密集）：查找/创建任务 → 运行 → 更新 Video.outputs
  */
 exports.transcode = async (req, res) => {
-  const video = await media.getVideo(req.params.id);
+  const video = await media.getVideo(req.params.id, req);
   if (!video) return res.status(404).json({ error: "Video not found" });
 
-  // 权限：user 只能操作自己的
-  if (!(req.user.groups || []).includes("Admin") && String(video.owner) !== (req.user.sub || req.user.id)) {
+  // 由于所有数据都使用固定的学号邮箱，Admin 可以访问所有数据，User 只能访问自己的数据
+  const isAdmin = (req.user.groups || []).includes("Admin");
+  const fixedUsername = process.env.QUT_USERNAME || "n11866632@qut.edu.au";
+  
+  if (!isAdmin && String(video["qut-username"]) !== fixedUsername) {
     return res.status(403).json({ error: "Forbidden" });
   }
 
@@ -38,19 +51,19 @@ exports.transcode = async (req, res) => {
   // 执行
   try {
     task.status = "running";
-    await putTaskStatus({ taskId: String(task._id), status: "running", progress: 0, updatedAt: Date.now() });
+    await putTaskStatus({ taskId: String(task._id), status: "running", progress: 0, updatedAt: Date.now() }, req);
 
     const outs = await transcodeMultiRes(video.filename);
-    await media.updateVideo(video.id, { outputs: outs, transcoded: true });
+    await media.updateVideo(video.id, { outputs: outs, transcoded: true }, req);
 
     task.status = "done";
-    await updateTaskStatus(String(task._id), { status: "done", progress: 100, updatedAt: Date.now() });
+    await updateTaskStatus(String(task._id), { status: "done", progress: 100, updatedAt: Date.now() }, req);
 
     res.json({ taskId: task._id, status: task.status, outputs: outs });
   } catch (e) {
     task.status = "failed";
     task.error = e.message || String(e);
-    await updateTaskStatus(String(task._id), { status: "failed", error: task.error, updatedAt: Date.now() });
+    await updateTaskStatus(String(task._id), { status: "failed", error: task.error, updatedAt: Date.now() }, req);
     return res.status(500).json({ taskId: task._id, status: task.status, error: task.error });
   }
 };
@@ -62,8 +75,11 @@ exports.transcode = async (req, res) => {
 exports.listVideos = async (req, res) => {
   const { page = 1, limit = 5, sort = "-createdAt", game, transcoded } = req.query;
 
-  const owner = (!(req.user.groups || []).includes("Admin")) ? (req.user.sub || req.user.id) : null;
-  const items = await media.listVideosByOwner(owner);
+  // 检查用户是否为 Admin，如果不是则只显示自己的内容
+  const isAdmin = (req.user.groups || []).includes("Admin");
+  const fixedUsername = process.env.QUT_USERNAME || "n11866632@qut.edu.au";
+  const owner = isAdmin ? null : fixedUsername;
+  const items = await media.listVideosByOwner(owner, req);
   res.json({ total: items.length, page: Number(page), limit: Number(limit), items });
 
 };
@@ -72,9 +88,14 @@ exports.listVideos = async (req, res) => {
  * 单条明细
  */
 exports.getVideo = async (req, res) => {
-  const video = await media.getVideo(req.params.id);
+  const video = await media.getVideo(req.params.id, req);
   if (!video) return res.status(404).json({ error: "Video not found" });
-  if (!(req.user.groups || []).includes("Admin") && String(video.owner) !== (req.user.sub || req.user.id)) {
+  
+  // 由于所有数据都使用固定的学号邮箱，Admin 可以访问所有数据，User 只能访问自己的数据
+  const isAdmin = (req.user.groups || []).includes("Admin");
+  const fixedUsername = process.env.QUT_USERNAME || "n11866632@qut.edu.au";
+  
+  if (!isAdmin && String(video["qut-username"]) !== fixedUsername) {
     return res.status(403).json({ error: "Forbidden" });
   }
   res.json(video);
@@ -84,22 +105,32 @@ exports.getVideo = async (req, res) => {
  * 删除：物理文件 + 文档
  */
 exports.deleteVideo = async (req, res) => {
-  const video = await media.getVideo(req.params.id);
+  const video = await media.getVideo(req.params.id, req);
   if (!video) return res.status(404).json({ error: "Video not found" });
-  if (!(req.user.groups || []).includes("Admin") && String(video.owner) !== (req.user.sub || req.user.id)) {
+  
+  // 由于所有数据都使用固定的学号邮箱，Admin 可以访问所有数据，User 只能访问自己的数据
+  const isAdmin = (req.user.groups || []).includes("Admin");
+  const fixedUsername = process.env.QUT_USERNAME || "n11866632@qut.edu.au";
+  
+  if (!isAdmin && String(video["qut-username"]) !== fixedUsername) {
     return res.status(403).json({ error: "Forbidden" });
   }
-  await media.deleteVideo(video.id);
+  await media.deleteVideo(video.id, req);
   res.json({ message: "Video deleted" });
 };
 
 exports.getDownloadUrl = async (req, res) => {
-  const video = await media.getVideo(req.params.id);
+  const video = await media.getVideo(req.params.id, req);
   if (!video) return res.status(404).json({ error: "Video not found" });
-  if (!(req.user.groups || []).includes("Admin") && String(video.owner) !== (req.user.sub || req.user.id)) {
+  
+  // 由于所有数据都使用固定的学号邮箱，Admin 可以访问所有数据，User 只能访问自己的数据
+  const isAdmin = (req.user.groups || []).includes("Admin");
+  const fixedUsername = process.env.QUT_USERNAME || "n11866632@qut.edu.au";
+  
+  if (!isAdmin && String(video["qut-username"]) !== fixedUsername) {
     return res.status(403).json({ error: "Forbidden" });
   }
-  const url = await createPresignedGetUrl(video.filename, 300);
-  res.json({ downloadUrl: url.url });
+  const url = await createPresignedGetUrl(video.filename, 3600); // 1小时有效期
+  res.json({ url: url.url });
 };
 

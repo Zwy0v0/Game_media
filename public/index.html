@@ -3,7 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <title>Game Media Client</title>
-  <style>body{font-family:system-ui;margin:20px} fieldset{margin-bottom:16px}</style>
+  <!-- QR Code Library -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <style>
+    body{font-family:system-ui;margin:20px} 
+    fieldset{margin-bottom:16px}
+    .admin-only{background-color:#ff6b6b;color:white;border:none;padding:5px 10px;border-radius:3px;}
+    .admin-only:disabled{background-color:#ccc;cursor:not-allowed;}
+    button{margin:2px;padding:5px 10px;border-radius:3px;cursor:pointer;}
+    input,select{margin:2px;padding:5px;border-radius:3px;border:1px solid #ccc;}
+    #qr-code{margin:10px 0;text-align:center;}
+    #qr-code canvas{border:1px solid #ccc;border-radius:5px;}
+  </style>
 </head>
 <body>
   <h1>Game Media Client</h1>
@@ -20,6 +31,10 @@
         <input id="r_user" placeholder="username">
         <input id="r_email" placeholder="email">
         <input id="r_pass" placeholder="password" type="password">
+        <select id="r_role">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+        </select>
         <button onclick="registerUser()">Register</button>
       </div>
       <div>
@@ -31,14 +46,44 @@
   </fieldset>
 
   <fieldset>
+    <legend>Multi-Factor Authentication (MFA)</legend>
+    <div id="mfa-section" style="display:none;">
+      <h4>Setup MFA</h4>
+      <button onclick="setupMFA()">Setup MFA</button>
+      <div id="mfa-setup" style="display:none;">
+        <p>Scan this QR code with your authenticator app:</p>
+        <div id="qr-code"></div>
+        <p>Or manually enter this secret key:</p>
+        <code id="secret-key"></code>
+        <br><br>
+        <input id="mfa-code" placeholder="Enter 6-digit code from app">
+        <button onclick="verifyMFA()">Verify & Enable MFA</button>
+      </div>
+    </div>
+    <div id="mfa-login-section" style="display:none;">
+      <h4>MFA Login</h4>
+      <input id="mfa-login-code" placeholder="Enter 6-digit MFA code">
+      <button onclick="completeMFALogin()">Complete Login</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
     <legend>Videos</legend>
     <input id="vg" placeholder="game name" value="LoL">
     <input id="vf" type="file" accept="video/*">
     <button onclick="uploadVideo()">Upload (S3 presigned)</button>
     <input id="vid" placeholder="videoId">
-    <button onclick="transcode()">Transcode</button>
+    <button onclick="transcode()" class="admin-only">Transcode</button>
     <button onclick="listVideos()">List</button>
     <div id="videos"></div>
+    <div id="task-progress" style="display:none; margin-top:10px; padding:10px; border:1px solid #ccc; border-radius:5px;">
+      <h4>任务进度</h4>
+      <div id="progress-bar" style="width:100%; height:20px; background-color:#f0f0f0; border-radius:10px; overflow:hidden;">
+        <div id="progress-fill" style="width:0%; height:100%; background-color:#4CAF50; transition:width 0.3s;"></div>
+      </div>
+      <p id="progress-text">准备中...</p>
+      <p id="task-status">状态: 等待中</p>
+    </div>
   </fieldset>
 
   <fieldset>
@@ -47,26 +92,86 @@
     <input id="sf" type="file" accept="image/*">
     <button onclick="uploadShot()">Upload (S3 presigned)</button>
     <input id="sid" placeholder="screenshotId">
-    <button onclick="processShot()">Process</button>
+    <button onclick="processShot()" class="admin-only">Process</button>
     <button onclick="listShots()">List</button>
     <div id="shots"></div>
+    <div id="shot-progress" style="display:none; margin-top:10px; padding:10px; border:1px solid #ccc; border-radius:5px;">
+      <h4>截图处理进度</h4>
+      <div id="shot-progress-bar" style="width:100%; height:20px; background-color:#f0f0f0; border-radius:10px; overflow:hidden;">
+        <div id="shot-progress-fill" style="width:0%; height:100%; background-color:#FF9800; transition:width 0.3s;"></div>
+      </div>
+      <p id="shot-progress-text">准备中...</p>
+      <p id="shot-task-status">状态: 等待中</p>
+    </div>
   </fieldset>
 
 <script>
 const BASE = location.origin;
 let token = "";
+let accessToken = ""; // 存储AccessToken用于MFA操作
+let userRole = "user";
+
+let mfaSession = null; // 存储MFA会话
 
 async function login(){
+  try {
   const r = await fetch(`${BASE}/api/v1/auth/login`,{
     method:"POST", headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ username: email.value, password: password.value })
   });
-  const d = await r.json(); token = d.IdToken || d.AccessToken || ""; authStatus.textContent = token? "OK" : "Failed";
+    const d = await r.json(); 
+    
+    if (d.ChallengeName === 'SOFTWARE_TOKEN_MFA') {
+      // 需要MFA验证
+      mfaSession = d.Session;
+      document.getElementById('mfa-login-section').style.display = 'block';
+      authStatus.textContent = "MFA Required";
+      alert("Please enter your MFA code to complete login");
+      return;
+    }
+    
+    token = d.IdToken || d.AccessToken || ""; 
+    accessToken = d.AccessToken || ""; // 单独存储AccessToken
+    userRole = d.role || "user";
+    authStatus.textContent = token? `OK (${userRole})` : "Failed";
+    
+    // 更新界面显示
+    updateUIForRole();
+    
+    // 显示MFA设置选项（如果已登录且未设置MFA）
+    if (token) {
+      document.getElementById('mfa-section').style.display = 'block';
+    }
+  } catch (error) {
+    alert("Login failed: " + error.message);
+  }
+}
+
+function updateUIForRole() {
+  // 根据用户角色显示/隐藏管理员功能
+  const adminButtons = document.querySelectorAll('.admin-only');
+  adminButtons.forEach(btn => {
+    btn.style.display = userRole === 'admin' ? 'inline-block' : 'none';
+  });
+  
+  // 更新按钮文本
+  const transcodeBtn = document.querySelector('button[onclick="transcode()"]');
+  const processBtn = document.querySelector('button[onclick="processShot()"]');
+  const delVideoBtn = document.querySelector('button[onclick="delVideo()"]');
+  const delShotBtn = document.querySelector('button[onclick="delShot()"]');
+  
+  if (userRole !== 'admin') {
+    if (transcodeBtn) transcodeBtn.disabled = true;
+    if (processBtn) processBtn.disabled = true;
+  } else {
+    if (transcodeBtn) transcodeBtn.disabled = false;
+    if (processBtn) processBtn.disabled = false;
+  }
 }
 async function registerUser(){
   const r = await fetch(`${BASE}/api/v1/auth/register`,{
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ username: r_user.value, email: r_email.value, password: r_pass.value })
+    body: JSON.stringify({ username: r_user.value, email: r_email.value, password: r_pass.value, role: r_role.value })
   });
   const d = await r.json(); alert("register: " + JSON.stringify(d));
 }
@@ -88,22 +193,54 @@ async function uploadVideo(){
 }
 async function transcode(){
   if(!vid.value) return alert("set videoId");
+  try {
   const r = await fetch(`${BASE}/api/v1/videos/${vid.value}/transcode`, { method:"POST", headers:{ Authorization:`Bearer ${token}` } });
-  const d = await r.json(); alert("transcode: " + JSON.stringify(d));
+    const d = await r.json();
+    
+    if (r.status === 403) {
+      alert("权限不足：只有管理员可以执行转码操作，或者您只能操作自己的视频");
+    } else if (r.status === 404) {
+      alert("视频未找到：请检查视频ID是否正确");
+    } else if (r.ok) {
+      alert("转码开始: " + JSON.stringify(d));
+      // 启动进度流
+      if (d.taskId) {
+        startProgressStream(d.taskId);
+      }
+    } else {
+      alert("转码失败: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("网络错误: " + error.message);
+  }
 }
 async function listVideos(){
   const r = await fetch(`${BASE}/api/v1/videos?sort=-createdAt`, { headers:{ Authorization:`Bearer ${token}` }});
   const d = await r.json();
   videos.innerHTML = d.items.map(x=>`<div>
-    <b>${x._id}</b> [${x.game}] transcoded=${x.transcoded}
-    <button onclick="download('${x._id}','720p')">dl 720p</button>
-    <button onclick="delVideo('${x._id}')">delete</button>
+    <b>${x.id}</b> [${x.game}] transcoded=${x.transcoded}
+    ${userRole === 'admin' ? `<button onclick="delVideo('${x.id}')">delete</button>` : ''}
   </div>`).join("");
 }
 // async function download(id,res="orig"){ location.href=`${BASE}/api/v1/videos/${id}/download?res=${res}`; }
 async function delVideo(id){
-  await fetch(`${BASE}/api/v1/videos/${id}`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` }});
+  try {
+    const r = await fetch(`${BASE}/api/v1/videos/${id}`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` }});
+    const d = await r.json();
+    
+    if (r.status === 403) {
+      alert("权限不足：只有管理员可以删除视频，或者您只能删除自己的视频");
+    } else if (r.status === 404) {
+      alert("视频未找到：请检查视频ID是否正确");
+    } else if (r.ok) {
+      alert("删除成功");
   listVideos();
+    } else {
+      alert("删除失败: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("网络错误: " + error.message);
+  }
 }
 
 async function uploadShot(){
@@ -116,20 +253,342 @@ async function uploadShot(){
 }
 async function processShot(){
   if(!sid.value) return alert("set screenshotId");
+  
+  try {
   const r = await fetch(`${BASE}/api/v1/screenshots/${sid.value}/process`, { method:"POST", headers:{ Authorization:`Bearer ${token}` }});
-  const d = await r.json(); alert("process: " + JSON.stringify(d));
+    const d = await r.json();
+    
+    if (r.status === 403) {
+      alert("权限不足：只有管理员可以执行截图处理操作");
+    } else if (r.status === 404) {
+      alert("截图未找到：请检查截图ID是否正确");
+    } else if (r.ok) {
+      alert("截图处理开始: " + JSON.stringify(d));
+      // 启动进度流
+      if (d.taskId) {
+        startShotProgressStream(d.taskId);
+      }
+    } else {
+      alert("截图处理失败: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("网络错误: " + error.message);
+  }
 }
 async function listShots(){
   const r = await fetch(`${BASE}/api/v1/screenshots?sort=-createdAt`, { headers:{ Authorization:`Bearer ${token}` }});
   const d = await r.json();
   shots.innerHTML = d.items.map(x=>`<div>
-    <b>${x._id}</b> [${x.game}] processed=${x.processed}
-    <button onclick="delShot('${x._id}')">delete</button>
+    <b>${x.id}</b> [${x.game}] processed=${x.processed}
+    ${userRole === 'admin' ? `<button onclick="delShot('${x.id}')">delete</button>` : ''}
   </div>`).join("");
 }
 async function delShot(id){
-  await fetch(`${BASE}/api/v1/screenshots/${id}`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` }});
+  try {
+    const r = await fetch(`${BASE}/api/v1/screenshots/${id}`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` }});
+    const d = await r.json();
+    
+    if (r.status === 403) {
+      alert("权限不足：只有管理员可以删除截图，或者您只能删除自己的截图");
+    } else if (r.status === 404) {
+      alert("截图未找到：请检查截图ID是否正确");
+    } else if (r.ok) {
+      alert("删除成功");
   listShots();
+    } else {
+      alert("删除失败: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("网络错误: " + error.message);
+  }
 }
+
+// SSE 进度流处理
+function startProgressStream(taskId) {
+  const eventSource = new EventSource(`${BASE}/api/v1/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`);
+  
+  eventSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    if (data.error) {
+      alert('Progress stream error: ' + data.error);
+      eventSource.close();
+    } else if (data.status === 'connected') {
+      console.log('SSE connected for task:', data.taskId);
+    } else {
+      updateProgress(data);
+    }
+  };
+  
+  eventSource.onerror = function(event) {
+    console.log('SSE connection lost, attempting to reconnect...');
+    eventSource.close();
+    
+    // 2秒后重连
+    setTimeout(() => {
+      startProgressStream(taskId);
+    }, 2000);
+  };
+  
+  // 存储eventSource以便后续关闭
+  window.currentEventSource = eventSource;
+}
+
+function updateProgress(taskData) {
+  console.log('Task progress:', taskData);
+  
+  // 显示进度面板
+  const progressPanel = document.getElementById('task-progress');
+  const progressFill = document.getElementById('progress-fill');
+  const progressText = document.getElementById('progress-text');
+  const taskStatus = document.getElementById('task-status');
+  
+  progressPanel.style.display = 'block';
+  
+  // 更新进度条
+  const progress = taskData.progress || 0;
+  progressFill.style.width = progress + '%';
+  progressText.textContent = `进度: ${progress}%`;
+  taskStatus.textContent = `状态: ${taskData.status}`;
+  
+  // 根据状态更新颜色
+  if (taskData.status === 'running') {
+    progressFill.style.backgroundColor = '#2196F3'; // 蓝色
+  } else if (taskData.status === 'done') {
+    progressFill.style.backgroundColor = '#4CAF50'; // 绿色
+    progressText.textContent = '任务完成！';
+    setTimeout(() => {
+      progressPanel.style.display = 'none';
+    }, 3000);
+    if (window.currentEventSource) {
+      window.currentEventSource.close();
+    }
+  } else if (taskData.status === 'failed') {
+    progressFill.style.backgroundColor = '#f44336'; // 红色
+    progressText.textContent = '任务失败: ' + (taskData.error || 'Unknown error');
+    setTimeout(() => {
+      progressPanel.style.display = 'none';
+    }, 5000);
+    if (window.currentEventSource) {
+      window.currentEventSource.close();
+    }
+  }
+}
+
+// 截图处理进度流
+function startShotProgressStream(taskId) {
+  const eventSource = new EventSource(`${BASE}/api/v1/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`);
+  
+  eventSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    if (data.error) {
+      alert('截图处理进度流错误: ' + data.error);
+      eventSource.close();
+    } else if (data.status === 'connected') {
+      console.log('SSE connected for shot task:', data.taskId);
+    } else {
+      updateShotProgress(data);
+    }
+  };
+  
+  eventSource.onerror = function(event) {
+    console.log('SSE connection lost for shot task, attempting to reconnect...');
+    eventSource.close();
+    
+    // 2秒后重连
+    setTimeout(() => {
+      startShotProgressStream(taskId);
+    }, 2000);
+  };
+  
+  // 存储eventSource以便后续关闭
+  window.currentShotEventSource = eventSource;
+}
+
+function updateShotProgress(taskData) {
+  console.log('Shot task progress:', taskData);
+  
+  // 显示截图进度面板
+  const progressPanel = document.getElementById('shot-progress');
+  const progressFill = document.getElementById('shot-progress-fill');
+  const progressText = document.getElementById('shot-progress-text');
+  const taskStatus = document.getElementById('shot-task-status');
+  
+  progressPanel.style.display = 'block';
+  
+  // 更新进度条
+  const progress = taskData.progress || 0;
+  progressFill.style.width = progress + '%';
+  progressText.textContent = `进度: ${progress}%`;
+  taskStatus.textContent = `状态: ${taskData.status}`;
+  
+  // 根据状态更新颜色
+  if (taskData.status === 'running') {
+    progressFill.style.backgroundColor = '#2196F3'; // 蓝色
+  } else if (taskData.status === 'done') {
+    progressFill.style.backgroundColor = '#4CAF50'; // 绿色
+    progressText.textContent = '截图处理完成！';
+    setTimeout(() => {
+      progressPanel.style.display = 'none';
+    }, 3000);
+    if (window.currentShotEventSource) {
+      window.currentShotEventSource.close();
+    }
+  } else if (taskData.status === 'failed') {
+    progressFill.style.backgroundColor = '#f44336'; // 红色
+    progressText.textContent = '截图处理失败: ' + (taskData.error || 'Unknown error');
+    setTimeout(() => {
+      progressPanel.style.display = 'none';
+    }, 5000);
+    if (window.currentShotEventSource) {
+      window.currentShotEventSource.close();
+    }
+  }
+}
+
+// MFA 相关函数
+let mfaSetupSession = null;
+
+async function setupMFA() {
+  try {
+    if (!accessToken) {
+      alert("Please login first to setup MFA");
+      return;
+    }
+    
+    const r = await fetch(`${BASE}/api/v1/auth/setup-mfa`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken||"3496lr6poistit3vtqgh79qtrm"}`
+      }
+    });
+    const d = await r.json();
+    
+    if (r.ok) {
+      mfaSetupSession = d.session;
+      document.getElementById('secret-key').textContent = d.secretCode;
+      document.getElementById('mfa-setup').style.display = 'block';
+      
+      // 生成真正的QR码
+      const qrCodeDiv = document.getElementById('qr-code');
+      qrCodeDiv.innerHTML = ''; // 清空之前的内容
+      
+      // 检查QRCode库是否加载成功
+      if (typeof QRCode !== 'undefined') {
+        // 使用QRCode库生成二维码
+        QRCode.toCanvas(qrCodeDiv, d.qrCodeUrl, {
+          width: 200,
+          height: 200,
+          color: {
+            dark: '#000000',
+            light: '#FFFFFF'
+          },
+          errorCorrectionLevel: 'M'
+        }, function (error) {
+          if (error) {
+            // 如果QR码生成失败，显示URL作为备用
+            qrCodeDiv.innerHTML = `<p>QR Code generation failed. Please use this URL:</p><p><code>${d.qrCodeUrl}</code></p>`;
+          }
+        });
+      } else {
+        // 如果QRCode库未加载，使用在线QR码生成服务作为备用
+        const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(d.qrCodeUrl)}`;
+        qrCodeDiv.innerHTML = `
+          <img src="${qrImageUrl}" alt="QR Code" style="border: 1px solid #ccc; border-radius: 5px;">
+          <p><small>QR Code generated via online service</small></p>
+        `;
+      }
+      
+      alert("MFA setup initiated. Please scan the QR code or enter the secret key manually.");
+    } else {
+      alert("MFA setup failed: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("MFA setup error: " + error.message);
+  }
+}
+
+async function verifyMFA() {
+  const mfaCode = document.getElementById('mfa-code').value;
+  if (!mfaCode || mfaCode.length !== 6) {
+    alert("Please enter a valid 6-digit code");
+    return;
+  }
+  
+  if (!accessToken) {
+    alert("Please login first to verify MFA");
+    return;
+  }
+  
+  try {
+    const r = await fetch(`${BASE}/api/v1/auth/verify-mfa`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`
+      },
+      body: JSON.stringify({
+        userCode: mfaCode,
+        session: mfaSetupSession
+      })
+    });
+    const d = await r.json();
+    
+    if (r.ok) {
+      alert("MFA enabled successfully!");
+      document.getElementById('mfa-setup').style.display = 'none';
+      document.getElementById('mfa-code').value = '';
+    } else {
+      alert("MFA verification failed: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("MFA verification error: " + error.message);
+  }
+}
+
+async function completeMFALogin() {
+  const mfaCode = document.getElementById('mfa-login-code').value;
+  if (!mfaCode || mfaCode.length !== 6) {
+    alert("Please enter a valid 6-digit code");
+    return;
+  }
+  
+  try {
+    const r = await fetch(`${BASE}/api/v1/auth/respond-mfa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById('email').value,
+        mfaCode: mfaCode,
+        session: mfaSession
+      })
+    });
+    const d = await r.json();
+    
+    if (r.ok) {
+      token = d.IdToken || d.AccessToken || "";
+      accessToken = d.AccessToken || ""; // 单独存储AccessToken
+      userRole = d.role || "user";
+      authStatus.textContent = `OK (${userRole})`;
+      
+      // 隐藏MFA登录界面
+      document.getElementById('mfa-login-section').style.display = 'none';
+      document.getElementById('mfa-login-code').value = '';
+      
+      // 更新界面显示
+      updateUIForRole();
+      
+      // 显示MFA设置选项
+      document.getElementById('mfa-section').style.display = 'block';
+      
+      alert("Login successful with MFA!");
+    } else {
+      alert("MFA login failed: " + JSON.stringify(d));
+    }
+  } catch (error) {
+    alert("MFA login error: " + error.message);
+  }
+}
+
 </script>
 </body></html>
