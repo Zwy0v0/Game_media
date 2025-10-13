@@ -29,20 +29,20 @@ function getCurrentUser(req) {
 
 async function getTableName() {
   // 优先读取 .env 里的表名
-  if (process.env.DB_TASK_TABLE) {
+  if (process.env.DB_TASK_TABLE && String(process.env.DB_TASK_TABLE).trim()) {
     return process.env.DB_TASK_TABLE;
   }
-  
+
   // 如果 .env 没有，则从 Parameter Store 读取
   if (process.env.PARAM_DDB_TASK_TABLE) {
     const tableName = await getParam(process.env.PARAM_DDB_TASK_TABLE);
-    if (tableName) {
+    if (tableName && String(tableName).trim()) {
       return tableName;
     }
   }
-  
-  // 容错机制：如果都不可用，抛出错误
-  throw new Error("Task table not set: neither DB_TASK_TABLE env var nor Parameter Store available");
+
+  // 默认表名（按用户要求）
+  return "game-media-tasks";
 }
 
 async function putTaskStatus(task, req = null) {
@@ -104,37 +104,37 @@ module.exports = { putTaskStatus, getTaskStatus, updateTaskStatus };
 // ---- Media tables helpers ----
 async function getVideosTableName() {
   // 优先读取 .env 里的表名
-  if (process.env.DDB_VIDEOS_TABLE) {
+  if (process.env.DDB_VIDEOS_TABLE && String(process.env.DDB_VIDEOS_TABLE).trim()) {
     return process.env.DDB_VIDEOS_TABLE;
   }
-  
+
   // 如果 .env 没有，则从 Parameter Store 读取
   if (process.env.PARAM_DDB_VIDEOS_TABLE) {
     const tableName = await getParam(process.env.PARAM_DDB_VIDEOS_TABLE);
-    if (tableName) {
+    if (tableName && String(tableName).trim()) {
       return tableName;
     }
   }
-  
-  // 容错机制：如果都不可用，抛出错误
-  throw new Error("Videos table not set: neither DDB_VIDEOS_TABLE env var nor Parameter Store available");
+
+  // 默认表名（按用户要求）
+  return "game-media-videos";
 }
 async function getScreenshotsTableName() {
   // 优先读取 .env 里的表名
-  if (process.env.DDB_SCREENSHOTS_TABLE) {
+  if (process.env.DDB_SCREENSHOTS_TABLE && String(process.env.DDB_SCREENSHOTS_TABLE).trim()) {
     return process.env.DDB_SCREENSHOTS_TABLE;
   }
-  
+
   // 如果 .env 没有，则从 Parameter Store 读取
   if (process.env.PARAM_DDB_SCREENSHOTS_TABLE) {
     const tableName = await getParam(process.env.PARAM_DDB_SCREENSHOTS_TABLE);
-    if (tableName) {
+    if (tableName && String(tableName).trim()) {
       return tableName;
     }
   }
-  
-  // 容错机制：如果都不可用，抛出错误
-  throw new Error("Screenshots table not set: neither DDB_SCREENSHOTS_TABLE env var nor Parameter Store available");
+
+  // 默认表名（按用户要求）
+  return "game-media-screenshots";
 }
 
 async function createVideo(item, req = null) {

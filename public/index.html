@@ -78,9 +78,9 @@
     <div id="videos"></div>
     <div id="task-progress" style="display:none; margin-top:10px; padding:10px; border:1px solid #ccc; border-radius:5px;">
       <h4>任务进度</h4>
-      <div id="progress-bar" style="width:100%; height:20px; background-color:#f0f0f0; border-radius:10px; overflow:hidden;">
+      <!-- <div id="progress-bar" style="width:100%; height:20px; background-color:#f0f0f0; border-radius:10px; overflow:hidden;">
         <div id="progress-fill" style="width:0%; height:100%; background-color:#4CAF50; transition:width 0.3s;"></div>
-      </div>
+      </div> -->
       <p id="progress-text">准备中...</p>
       <p id="task-status">状态: 等待中</p>
     </div>
@@ -203,9 +203,9 @@ async function transcode(){
       alert("视频未找到：请检查视频ID是否正确");
     } else if (r.ok) {
       alert("转码开始: " + JSON.stringify(d));
-      // 启动进度流
+      // 显示任务已提交
       if (d.taskId) {
-        startProgressStream(d.taskId);
+        showTaskSubmitted('video');
       }
     } else {
       alert("转码失败: " + JSON.stringify(d));
@@ -264,9 +264,9 @@ async function processShot(){
       alert("截图未找到：请检查截图ID是否正确");
     } else if (r.ok) {
       alert("截图处理开始: " + JSON.stringify(d));
-      // 启动进度流
+      // 显示任务已提交
       if (d.taskId) {
-        startShotProgressStream(d.taskId);
+        showTaskSubmitted('screenshot');
       }
     } else {
       alert("截图处理失败: " + JSON.stringify(d));
@@ -303,145 +303,34 @@ async function delShot(id){
   }
 }
 
-// SSE 进度流处理
-function startProgressStream(taskId) {
-  const eventSource = new EventSource(`${BASE}/api/v1/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`);
-  
-  eventSource.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    if (data.error) {
-      alert('Progress stream error: ' + data.error);
-      eventSource.close();
-    } else if (data.status === 'connected') {
-      console.log('SSE connected for task:', data.taskId);
-    } else {
-      updateProgress(data);
-    }
-  };
-  
-  eventSource.onerror = function(event) {
-    console.log('SSE connection lost, attempting to reconnect...');
-    eventSource.close();
+// 简单任务提交反馈
+function showTaskSubmitted(type) {
+  if (type === 'video') {
+    const progressPanel = document.getElementById('task-progress');
+    const progressText = document.getElementById('progress-text');
+    const taskStatus = document.getElementById('task-status');
     
-    // 2秒后重连
-    setTimeout(() => {
-      startProgressStream(taskId);
-    }, 2000);
-  };
-  
-  // 存储eventSource以便后续关闭
-  window.currentEventSource = eventSource;
-}
-
-function updateProgress(taskData) {
-  console.log('Task progress:', taskData);
-  
-  // 显示进度面板
-  const progressPanel = document.getElementById('task-progress');
-  const progressFill = document.getElementById('progress-fill');
-  const progressText = document.getElementById('progress-text');
-  const taskStatus = document.getElementById('task-status');
-  
-  progressPanel.style.display = 'block';
-  
-  // 更新进度条
-  const progress = taskData.progress || 0;
-  progressFill.style.width = progress + '%';
-  progressText.textContent = `进度: ${progress}%`;
-  taskStatus.textContent = `状态: ${taskData.status}`;
-  
-  // 根据状态更新颜色
-  if (taskData.status === 'running') {
-    progressFill.style.backgroundColor = '#2196F3'; // 蓝色
-  } else if (taskData.status === 'done') {
-    progressFill.style.backgroundColor = '#4CAF50'; // 绿色
-    progressText.textContent = '任务完成！';
+    progressPanel.style.display = 'block';
+    progressText.textContent = 'SQS processing...';
+    taskStatus.textContent = 'status: done';
+    
+    // 3秒后隐藏
     setTimeout(() => {
       progressPanel.style.display = 'none';
     }, 3000);
-    if (window.currentEventSource) {
-      window.currentEventSource.close();
-    }
-  } else if (taskData.status === 'failed') {
-    progressFill.style.backgroundColor = '#f44336'; // 红色
-    progressText.textContent = '任务失败: ' + (taskData.error || 'Unknown error');
-    setTimeout(() => {
-      progressPanel.style.display = 'none';
-    }, 5000);
-    if (window.currentEventSource) {
-      window.currentEventSource.close();
-    }
-  }
-}
-
-// 截图处理进度流
-function startShotProgressStream(taskId) {
-  const eventSource = new EventSource(`${BASE}/api/v1/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`);
-  
-  eventSource.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    if (data.error) {
-      alert('截图处理进度流错误: ' + data.error);
-      eventSource.close();
-    } else if (data.status === 'connected') {
-      console.log('SSE connected for shot task:', data.taskId);
-    } else {
-      updateShotProgress(data);
-    }
-  };
-  
-  eventSource.onerror = function(event) {
-    console.log('SSE connection lost for shot task, attempting to reconnect...');
-    eventSource.close();
+  } else if (type === 'screenshot') {
+    const progressPanel = document.getElementById('shot-progress');
+    const progressText = document.getElementById('shot-progress-text');
+    const taskStatus = document.getElementById('shot-task-status');
     
-    // 2秒后重连
-    setTimeout(() => {
-      startShotProgressStream(taskId);
-    }, 2000);
-  };
-  
-  // 存储eventSource以便后续关闭
-  window.currentShotEventSource = eventSource;
-}
-
-function updateShotProgress(taskData) {
-  console.log('Shot task progress:', taskData);
-  
-  // 显示截图进度面板
-  const progressPanel = document.getElementById('shot-progress');
-  const progressFill = document.getElementById('shot-progress-fill');
-  const progressText = document.getElementById('shot-progress-text');
-  const taskStatus = document.getElementById('shot-task-status');
-  
-  progressPanel.style.display = 'block';
-  
-  // 更新进度条
-  const progress = taskData.progress || 0;
-  progressFill.style.width = progress + '%';
-  progressText.textContent = `进度: ${progress}%`;
-  taskStatus.textContent = `状态: ${taskData.status}`;
-  
-  // 根据状态更新颜色
-  if (taskData.status === 'running') {
-    progressFill.style.backgroundColor = '#2196F3'; // 蓝色
-  } else if (taskData.status === 'done') {
-    progressFill.style.backgroundColor = '#4CAF50'; // 绿色
-    progressText.textContent = '截图处理完成！';
+    progressPanel.style.display = 'block';
+    progressText.textContent = 'SQS processing...';
+    taskStatus.textContent = 'status: done';
+    
+    // 3秒后隐藏
     setTimeout(() => {
       progressPanel.style.display = 'none';
     }, 3000);
-    if (window.currentShotEventSource) {
-      window.currentShotEventSource.close();
-    }
-  } else if (taskData.status === 'failed') {
-    progressFill.style.backgroundColor = '#f44336'; // 红色
-    progressText.textContent = '截图处理失败: ' + (taskData.error || 'Unknown error');
-    setTimeout(() => {
-      progressPanel.style.display = 'none';
-    }, 5000);
-    if (window.currentShotEventSource) {
-      window.currentShotEventSource.close();
-    }
   }
 }
 

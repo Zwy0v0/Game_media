@@ -1,7 +1,9 @@
-version: "1"
+version: "3.8"
 services:
-  app:
-    image: 901444280953.dkr.ecr.ap-southeast-2.amazonaws.com/game-media-app
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.api-gateway
     ports:
       - "8080:8080"
     environment:
@@ -10,6 +12,40 @@ services:
       - COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID}
       - S3_BUCKET=${S3_BUCKET}
       - DDB_TASK_TABLE=${DDB_TASK_TABLE}
-    volumes:
-      
+      - VIDEO_TRANSCODE_QUEUE_URL=${VIDEO_TRANSCODE_QUEUE_URL}
+      - IMAGE_PROCESS_QUEUE_URL=${IMAGE_PROCESS_QUEUE_URL}
+      - DLQ_URL=${DLQ_URL}
+    depends_on:
+      - video-processor
+      - image-processor
+
+  video-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.video-processor
+    ports:
+      - "8081:8081"
+    environment:
+      - AWS_REGION=ap-southeast-2
+      - S3_BUCKET=${S3_BUCKET}
+      - DDB_TASK_TABLE=${DDB_TASK_TABLE}
+      - VIDEO_TRANSCODE_QUEUE_URL=${VIDEO_TRANSCODE_QUEUE_URL}
+      - DLQ_URL=${DLQ_URL}
+    deploy:
+      replicas: 2
+
+  image-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.image-processor
+    ports:
+      - "8082:8082"
+    environment:
+      - AWS_REGION=ap-southeast-2
+      - S3_BUCKET=${S3_BUCKET}
+      - DDB_TASK_TABLE=${DDB_TASK_TABLE}
+      - IMAGE_PROCESS_QUEUE_URL=${IMAGE_PROCESS_QUEUE_URL}
+      - DLQ_URL=${DLQ_URL}
+    deploy:
+      replicas: 2
 

@@ -1,10 +1,10 @@
 const path = require("path");
 const fs = require("fs");
 const { media } = require("../utils/dynamo");
-const { transcodeMultiRes } = require("../utils/ffmpeg");
 const { fetchWikiGameInfo } = require("../utils/gameInfo");
 const { createPresignedGetUrl } = require("../utils/s3");
-const { putTaskStatus, updateTaskStatus } = require("../utils/dynamo");
+const { putTaskStatus } = require("../utils/dynamo");
+const { sendMessage } = require("../utils/sqs");
 
 // 客户端直传完成后创建元数据
 exports.createVideoRecord = async (req, res) => {
@@ -32,7 +32,7 @@ exports.createVideoRecord = async (req, res) => {
 };
 
 /**
- * 触发转码（CPU密集）：查找/创建任务 → 运行 → 更新 Video.outputs
+ * 触发转码（异步队列）：查找/创建任务 → 发送到SQS队列
  */
 exports.transcode = async (req, res) => {
   const video = await media.getVideo(req.params.id, req);
@@ -46,25 +46,54 @@ exports.transcode = async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const task = { _id: String(Date.now()), type: "transcode", targetType: "video", targetId: video.id, owner: req.user.sub || req.user.id, status: "queued", params: { multi: ["720p","480p","360p"] }, createdAt: Date.now() };
+  const taskId = String(Date.now());
+  const task = { 
+    taskId: taskId,
+    type: "transcode", 
+    targetType: "video", 
+    targetId: video.id, 
+    videoId: video.id, 
+    owner: req.user.sub || req.user.id, 
+    status: "queued", 
+    params: { multi: ["720p","480p","360p"] }, 
+    createdAt: Date.now(),
+    filename: video.filename,
+    queueName: "VIDEO_TRANSCODE"
+  };
 
-  // 执行
   try {
-    task.status = "running";
-    await putTaskStatus({ taskId: String(task._id), status: "running", progress: 0, updatedAt: Date.now() }, req);
+    // 创建任务记录
+    await putTaskStatus({ 
+      taskId: taskId, 
+      status: "queued", 
+      progress: 0, 
+      updatedAt: Date.now() 
+    }, req);
 
-    const outs = await transcodeMultiRes(video.filename);
-    await media.updateVideo(video.id, { outputs: outs, transcoded: true }, req);
+    // 发送到SQS队列
+    await sendMessage("VIDEO_TRANSCODE", task, {
+      videoId: {
+        DataType: "String",
+        StringValue: video.id
+      },
+      filename: {
+        DataType: "String", 
+        StringValue: video.filename
+      }
+    });
 
-    task.status = "done";
-    await updateTaskStatus(String(task._id), { status: "done", progress: 100, updatedAt: Date.now() }, req);
-
-    res.json({ taskId: task._id, status: task.status, outputs: outs });
-  } catch (e) {
-    task.status = "failed";
-    task.error = e.message || String(e);
-    await updateTaskStatus(String(task._id), { status: "failed", error: task.error, updatedAt: Date.now() }, req);
-    return res.status(500).json({ taskId: task._id, status: task.status, error: task.error });
+    res.json({ 
+      taskId: taskId, 
+      status: "queued", 
+      message: "Video transcode task queued successfully" 
+    });
+  } catch (error) {
+    console.error("Error queuing video transcode task:", error);
+    return res.status(500).json({ 
+      taskId: taskId, 
+      status: "failed", 
+      error: error.message || "Failed to queue transcode task" 
+    });
   }
 };
 

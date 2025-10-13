@@ -41,9 +41,9 @@ function auth(requiredRole) {
     let decoded;
     try {
       decoded = jwt.decode(tokenValue);
-      console.log('Token audience:', decoded?.aud);
-      console.log('Expected audience:', process.env.COGNITO_CLIENT_ID);
-      console.log('Token type:', decoded?.token_use);
+      // console.log('Token audience:', decoded?.aud);
+      // console.log('Expected audience:', process.env.COGNITO_CLIENT_ID);
+      // console.log('Token type:', decoded?.token_use);
     } catch (e) {
       console.log('Token decode error:', e.message);
     }

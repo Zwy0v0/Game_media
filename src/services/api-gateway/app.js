@@ -2,14 +2,14 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const path = require("path");
-const { getAppSecrets } = require("./utils/config");
+const { getAppSecrets } = require("../../utils/config");
 
 require("dotenv").config();
 
-const authRoutes = require("./routes/auth");
-const videoRoutes = require("./routes/videos");
-const screenshotRoutes = require("./routes/screenshots");
-const taskRoutes = require("./routes/tasks");
+const authRoutes = require("../../routes/auth");
+const videoRoutes = require("../../routes/videos");
+const screenshotRoutes = require("../../routes/screenshots");
+const taskRoutes = require("../../routes/tasks");
 
 const app = express();
 
@@ -34,8 +34,8 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json())
 app.use(express.static('public'))
-app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
-app.use("/outputs", express.static(path.join(__dirname, "../outputs")));
+app.use("/uploads", express.static(path.join(__dirname, "../../../uploads")));
+app.use("/outputs", express.static(path.join(__dirname, "../../../outputs")));
 
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/videos", videoRoutes);
@@ -47,13 +47,12 @@ app.get("/health", (req, res) => {
   res.json({ status: "healthy", service: "api-gateway", timestamp: new Date().toISOString() });
 });
 
-
 const PORT = process.env.PORT || 8080;
 
 // 启动应用
 async function startApp() {
   await initApp();
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`API Gateway service running on port ${PORT}`));
 }
 
 startApp();

@@ -1,9 +1,9 @@
 const path = require("path");
 const fs = require("fs");
 const { media } = require("../utils/dynamo");
-const { processImageMulti } = require("../utils/sharp");
 const { createPresignedGetUrl } = require("../utils/s3");
-const { putTaskStatus, updateTaskStatus } = require("../utils/dynamo");
+const { putTaskStatus } = require("../utils/dynamo");
+const { sendMessage } = require("../utils/sqs");
 
 exports.createScreenshotRecord = async (req, res) => {
   const { key, mimeType, game } = req.body || {};
@@ -24,7 +24,7 @@ exports.createScreenshotRecord = async (req, res) => {
 };
 
 /**
- * 处理（CPU可选）：生成 thumb/medium
+ * 处理（异步队列）：生成 thumb/medium
  * 返回 taskId + 状态
  */
 exports.processScreenshot = async (req, res) => {
@@ -39,24 +39,53 @@ exports.processScreenshot = async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const task = { _id: String(Date.now()), type: "image-process", targetType: "screenshot", targetId: shot.id, owner: req.user.sub || req.user.id, status: "queued", params: { sizes: ["thumb","medium"] }, createdAt: Date.now() };
+  const taskId = String(Date.now());
+  const task = { 
+    taskId: taskId,
+    type: "image-process", 
+    targetType: "screenshot", 
+    targetId: shot.id, 
+    owner: req.user.sub || req.user.id, 
+    status: "queued", 
+    params: { sizes: ["thumb","medium"] }, 
+    createdAt: Date.now(),
+    filename: shot.filename,
+    queueName: "IMAGE_PROCESS"
+  };
 
   try {
-    task.status = "running";
-    await putTaskStatus({ taskId: String(task._id), status: "running", progress: 0, updatedAt: Date.now() }, req);
+    // 创建任务记录
+    await putTaskStatus({ 
+      taskId: taskId, 
+      status: "queued", 
+      progress: 0, 
+      updatedAt: Date.now() 
+    }, req);
 
-    const outs = await processImageMulti(shot.filename);
-    await media.updateScreenshot(shot.id, { outputs: outs, processed: true }, req);
+    // 发送到SQS队列
+    await sendMessage("IMAGE_PROCESS", task, {
+      screenshotId: {
+        DataType: "String",
+        StringValue: shot.id
+      },
+      filename: {
+        DataType: "String", 
+        StringValue: shot.filename
+      }
+    });
 
-    task.status = "done";
-    await updateTaskStatus(String(task._id), { status: "done", progress: 100, updatedAt: Date.now() }, req);
-
-    res.json({ taskId: task._id, status: task.status, outputs: outs });
-  } catch (e) {
-    task.status = "failed";
-    task.error = e.message || String(e);
-    await updateTaskStatus(String(task._id), { status: "failed", error: task.error, updatedAt: Date.now() }, req);
-    return res.status(500).json({ taskId: task._id, status: task.status, error: task.error });
+    res.json({ 
+      taskId: taskId, 
+      status: "queued", 
+      message: "Image processing task queued successfully" 
+    });
+  } catch (error) {
+    console.error("Error queuing image processing task:", error);
+    return res.status(500).json({ 
+      taskId: taskId, 
+      status: "failed", 
+      error: error.message || "Failed to queue image processing task" 
+    });
   }
 };
 
