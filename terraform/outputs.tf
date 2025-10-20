@@ -92,3 +92,25 @@ output "ecs_task_role_arn" {
   description = "ARN of the ECS task role"
   value       = aws_iam_role.ecs_task_role.arn
 }
+
+# Lambda Function Outputs
+output "s3_event_handler_lambda_arn" {
+  description = "ARN of the S3 event handler Lambda function"
+  value       = aws_lambda_function.s3_event_handler.arn
+}
+
+output "custom_scaling_metric_lambda_arn" {
+  description = "ARN of the custom scaling metric Lambda function"
+  value       = aws_lambda_function.custom_scaling_metric.arn
+}
+
+output "lambda_role_arn" {
+  description = "ARN of the Lambda execution role"
+  value       = aws_iam_role.lambda_role.arn
+}
+
+# CloudWatch Event Rule Output
+output "custom_scaling_event_rule_arn" {
+  description = "ARN of the custom scaling CloudWatch event rule"
+  value       = aws_cloudwatch_event_rule.custom_scaling.arn
+}

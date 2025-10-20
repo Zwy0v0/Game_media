@@ -614,3 +614,214 @@ resource "aws_iam_role_policy_attachment" "ecs_task_role_policy" {
   role       = aws_iam_role.ecs_task_role.name
   policy_arn = aws_iam_policy.ecs_task_policy.arn
 }
+
+# Lambda Functions
+resource "aws_lambda_function" "s3_event_handler" {
+  filename         = "lambda/s3-event-handler.zip"
+  function_name    = "game-media-s3-event-handler"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "s3-event-handler.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 30
+  memory_size     = 256
+
+  environment {
+    variables = {
+      VIDEO_TRANSCODE_QUEUE_URL = aws_sqs_queue.video_transcode_queue.url
+      IMAGE_PROCESS_QUEUE_URL   = aws_sqs_queue.image_process_queue.url
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_role_policy,
+    aws_cloudwatch_log_group.lambda_logs,
+  ]
+
+  tags = {
+    Name        = "S3 Event Handler Lambda"
+    Environment = "production"
+    Purpose     = "assessment-3"
+    qut-username = "n11866632@qut.edu.au"
+  }
+}
+
+resource "aws_lambda_function" "custom_scaling_metric" {
+  filename         = "lambda/custom-scaling-metric.zip"
+  function_name    = "game-media-custom-scaling-metric"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "custom-scaling-metric.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 60
+  memory_size     = 256
+
+  environment {
+    variables = {
+      VIDEO_TRANSCODE_QUEUE_URL = aws_sqs_queue.video_transcode_queue.url
+      IMAGE_PROCESS_QUEUE_URL   = aws_sqs_queue.image_process_queue.url
+      ECS_CLUSTER_NAME         = aws_ecs_cluster.game_media_cluster.name
+      ECS_SERVICE_NAME         = "game-media-video-processor-service"
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_role_policy,
+    aws_cloudwatch_log_group.lambda_logs,
+  ]
+
+  tags = {
+    Name        = "Custom Scaling Metric Lambda"
+    Environment = "production"
+    Purpose     = "assessment-3"
+    qut-username = "n11866632@qut.edu.au"
+  }
+}
+
+# Lambda IAM Role
+resource "aws_iam_role" "lambda_role" {
+  name = "game-media-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "Lambda Execution Role"
+    Environment = "production"
+    Purpose     = "assessment-3"
+    qut-username = "n11866632@qut.edu.au"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_role_policy" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.lambda_policy.arn
+}
+
+# Lambda IAM Policy
+resource "aws_iam_policy" "lambda_policy" {
+  name        = "game-media-lambda-policy"
+  description = "Policy for Lambda functions to access AWS services"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          aws_sqs_queue.video_transcode_queue.arn,
+          aws_sqs_queue.image_process_queue.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "application-autoscaling:RegisterScalableTarget",
+          "application-autoscaling:PutScalingPolicy",
+          "application-autoscaling:DescribeScalableTargets",
+          "application-autoscaling:DescribeScalingPolicies"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "Lambda Policy"
+    Environment = "production"
+    Purpose     = "assessment-3"
+    qut-username = "n11866632@qut.edu.au"
+  }
+}
+
+# CloudWatch Log Group for Lambda
+resource "aws_cloudwatch_log_group" "lambda_logs" {
+  name              = "/aws/lambda/game-media-lambda"
+  retention_in_days = 7
+
+  tags = {
+    Name        = "Lambda Logs"
+    Environment = "production"
+    Purpose     = "assessment-3"
+    qut-username = "n11866632@qut.edu.au"
+  }
+}
+
+# S3 Event Notification for Lambda
+resource "aws_s3_bucket_notification" "lambda_trigger" {
+  bucket = aws_s3_bucket.media_bucket.id
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.s3_event_handler.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ""
+  }
+
+  depends_on = [aws_lambda_permission.s3_invoke_lambda]
+}
+
+# Lambda Permission for S3
+resource "aws_lambda_permission" "s3_invoke_lambda" {
+  statement_id  = "AllowExecutionFromS3Bucket"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.s3_event_handler.function_name
+  principal     = "s3.amazonaws.com"
+  source_arn    = aws_s3_bucket.media_bucket.arn
+}
+
+# CloudWatch Event Rule for Custom Scaling
+resource "aws_cloudwatch_event_rule" "custom_scaling" {
+  name                = "game-media-custom-scaling"
+  description         = "Trigger custom scaling based on SQS queue depth"
+  schedule_expression = "rate(1 minute)"
+
+  tags = {
+    Name        = "Custom Scaling Event Rule"
+    Environment = "production"
+    Purpose     = "assessment-3"
+    qut-username = "n11866632@qut.edu.au"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "lambda" {
+  rule      = aws_cloudwatch_event_rule.custom_scaling.name
+  target_id = "CustomScalingLambda"
+  arn       = aws_lambda_function.custom_scaling_metric.arn
+}
+
+resource "aws_lambda_permission" "cloudwatch_invoke_lambda" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.custom_scaling_metric.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.custom_scaling.arn
+}

@@ -1,0 +1,15 @@
+{
+  "name": "game-media-lambda",
+  "version": "1.0.0",
+  "description": "Lambda functions for Game Media Application",
+  "main": "index.js",
+  "dependencies": {
+    "aws-sdk": "^2.1691.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["lambda", "aws", "game-media"],
+  "author": "",
+  "license": "ISC"
+}

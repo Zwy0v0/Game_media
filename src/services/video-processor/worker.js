@@ -41,7 +41,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "healthy", service: "video-processor", timestamp: new Date().toISOString() });
 });
 
-const PORT = 8081;
+const PORT = 3000;
 
 /**
  * 处理视频转码任务
