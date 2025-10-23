@@ -1,6 +1,7 @@
 const AWS = require('aws-sdk');
 const cloudwatch = new AWS.CloudWatch();
 const applicationAutoScaling = new AWS.ApplicationAutoScaling();
+const ecs = new AWS.ECS();
 
 exports.handler = async (event) => {
     console.log('Custom scaling metric handler triggered');
@@ -115,6 +116,23 @@ exports.handler = async (event) => {
                 }
             ]
         }).promise();
+        
+        // 实际更新ECS服务容量 (如果环境变量存在)
+        if (process.env.ECS_CLUSTER_NAME && process.env.ECS_SERVICE_NAME) {
+            try {
+                await ecs.updateService({
+                    cluster: process.env.ECS_CLUSTER_NAME,
+                    service: process.env.ECS_SERVICE_NAME,
+                    desiredCount: targetCapacity
+                }).promise();
+                console.log(`Updated ECS service desired count to: ${targetCapacity}`);
+            } catch (ecsError) {
+                console.error('Error updating ECS service:', ecsError);
+                // Don't fail the entire function if ECS update fails
+            }
+        } else {
+            console.log('ECS environment variables not set - skipping service update');
+        }
         
         return {
             statusCode: 200,
